@@ -1,0 +1,569 @@
+package cli
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync/atomic"
+	"testing"
+)
+
+// harness runs the CLI with an isolated config dir and captured streams.
+type harness struct {
+	t      *testing.T
+	srv    *httptest.Server
+	out    bytes.Buffer
+	err    bytes.Buffer
+	dir    string
+	hits   int32
+	handle func(w http.ResponseWriter, r *http.Request)
+}
+
+func newHarness(t *testing.T) *harness {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("DS_TOOLS_CONFIG", filepath.Join(dir, "config.json"))
+	t.Setenv("DEEPSEEK_API_KEY", "sk-test-key")
+	t.Setenv("DEEPSEEK_BASE_URL", "")
+	t.Setenv("DS_TOOLS_FORMAT", "")
+	t.Setenv("NO_COLOR", "1")
+
+	h := &harness{t: t, dir: dir}
+	h.handle = func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("unexpected request to %s", r.URL.Path)
+		w.WriteHeader(http.StatusTeapot)
+	}
+	h.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&h.hits, 1)
+		h.handle(w, r)
+	}))
+	t.Cleanup(h.srv.Close)
+	return h
+}
+
+func (h *harness) run(args ...string) int {
+	h.t.Helper()
+	h.out.Reset()
+	h.err.Reset()
+	full := append([]string{"--base-url", h.srv.URL, "--retries", "0"}, args...)
+	return Execute(full, strings.NewReader(""), &h.out, &h.err)
+}
+
+func (h *harness) runStdin(stdin string, args ...string) int {
+	h.t.Helper()
+	h.out.Reset()
+	h.err.Reset()
+	full := append([]string{"--base-url", h.srv.URL, "--retries", "0"}, args...)
+	return Execute(full, strings.NewReader(stdin), &h.out, &h.err)
+}
+
+func (h *harness) jsonOut(t *testing.T) map[string]any {
+	t.Helper()
+	var v map[string]any
+	if err := json.Unmarshal(h.out.Bytes(), &v); err != nil {
+		t.Fatalf("stdout is not JSON: %v\n%s", err, h.out.String())
+	}
+	return v
+}
+
+func searchResponse(n int) string {
+	items := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		items = append(items, fmt.Sprintf(`{
+			"rerank_score": %.2f,
+			"title": "Result %d",
+			"url": "https://example.com/%d",
+			"snippet": "snippet %d",
+			"summary": "summary %d",
+			"content": "content %d",
+			"site_name": "Example",
+			"site_icon": null,
+			"date": "2026-06-01T00:00:00+00:00",
+			"authority": 3
+		}`, 2.5-float64(i), i, i, i, i, i))
+	}
+	return `{"results":[` + strings.Join(items, ",") + `]}`
+}
+
+func TestSearchJSONProjection(t *testing.T) {
+	h := newHarness(t)
+	h.handle = func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/tools/search" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer sk-test-key" {
+			t.Errorf("auth header = %q", got)
+		}
+		body, _ := io.ReadAll(r.Body)
+		var req map[string]any
+		_ = json.Unmarshal(body, &req)
+		if req["query"] != "hello world" {
+			t.Errorf("query = %v", req["query"])
+		}
+		if req["count"] != float64(2) {
+			t.Errorf("count = %v", req["count"])
+		}
+		fmt.Fprint(w, searchResponse(2))
+	}
+
+	if code := h.run("search", "hello", "world", "-n", "2", "--format", "json", "--fields", "title,url,score"); code != 0 {
+		t.Fatalf("exit = %d, stderr=%s", code, h.err.String())
+	}
+	v := h.jsonOut(t)
+	results := v["results"].([]any)
+	if len(results) != 2 {
+		t.Fatalf("results = %d", len(results))
+	}
+	first := results[0].(map[string]any)
+	if _, ok := first["rerank_score"]; !ok {
+		t.Fatalf("alias score was not mapped to rerank_score: %v", first)
+	}
+	if len(first) != 3 {
+		t.Fatalf("projection kept %d fields: %v", len(first), first)
+	}
+}
+
+func TestSearchJSONLOrderPreserved(t *testing.T) {
+	h := newHarness(t)
+	h.handle = func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, searchResponse(1)) }
+	if code := h.run("search", "x", "--format", "jsonl", "--fields", "url,title"); code != 0 {
+		t.Fatalf("exit = %d: %s", code, h.err.String())
+	}
+	line := strings.TrimSpace(h.out.String())
+	if !strings.HasPrefix(line, `{"url":"https://example.com/0","title":"Result 0"}`) {
+		t.Fatalf("jsonl = %s", line)
+	}
+}
+
+func TestSearchEmptyResultsIsSuccess(t *testing.T) {
+	h := newHarness(t)
+	h.handle = func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, `{"results":[]}`) }
+	if code := h.run("search", "nothing", "--format", "json"); code != 0 {
+		t.Fatalf("empty result must exit 0, got %d", code)
+	}
+	v := h.jsonOut(t)
+	if len(v["results"].([]any)) != 0 {
+		t.Fatalf("expected empty results")
+	}
+}
+
+func TestSearchFilters(t *testing.T) {
+	h := newHarness(t)
+	h.handle = func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, searchResponse(3)) }
+	if code := h.run("search", "x", "--format", "jsonl", "--min-score", "1.8"); code != 0 {
+		t.Fatalf("exit = %d", code)
+	}
+	// scores are 2.50, 1.50, 0.50 -> only the first survives 1.8
+	if got := len(strings.Split(strings.TrimSpace(h.out.String()), "\n")); got != 1 {
+		t.Fatalf("expected 1 result, got %d lines: %s", got, h.out.String())
+	}
+}
+
+func TestAuthAndServerExitCodes(t *testing.T) {
+	cases := []struct {
+		status int
+		body   string
+		want   int
+	}{
+		{401, `{"error":{"message":"invalid key","type":"authentication_error","param":null,"code":"invalid_api_key"}}`, ExitAuth},
+		{402, `{"error":{"message":"insufficient balance","type":"insufficient_quota","param":null,"code":"insufficient_quota"}}`, ExitServer},
+		{400, `{"error":{"message":"'count' must be between 1 and 50","type":"invalid_request_error","param":null,"code":"invalid_request_error"}}`, ExitServer},
+		{504, `{"error":{"message":"timeout","type":"server_error","param":null,"code":"server_error"}}`, ExitServer},
+	}
+	for _, c := range cases {
+		h := newHarness(t)
+		h.handle = func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(c.status)
+			fmt.Fprint(w, c.body)
+		}
+		if code := h.run("search", "x"); code != c.want {
+			t.Fatalf("status %d -> exit %d, want %d", c.status, code, c.want)
+		}
+	}
+}
+
+func TestStructuredErrorOutput(t *testing.T) {
+	h := newHarness(t)
+	h.handle = func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(429)
+		fmt.Fprint(w, `{"error":{"message":"rate limited","type":"rate_limit_error","param":null,"code":"rate_limit_error"}}`)
+	}
+	if code := h.run("search", "x", "--error-format", "json"); code != ExitServer {
+		t.Fatalf("exit = %d", code)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(h.err.Bytes()), &payload); err != nil {
+		t.Fatalf("stderr not JSON: %v (%s)", err, h.err.String())
+	}
+	if payload["retryable"] != true || payload["status"] != float64(429) {
+		t.Fatalf("payload = %v", payload)
+	}
+}
+
+func TestRetryOn429ThenSuccess(t *testing.T) {
+	h := newHarness(t)
+	var calls int32
+	h.handle = func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&calls, 1) == 1 {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(429)
+			fmt.Fprint(w, `{"error":{"message":"slow down","type":"rate_limit_error","code":"rate_limit_error"}}`)
+			return
+		}
+		fmt.Fprint(w, searchResponse(1))
+	}
+	// --retries 1 overrides the harness default of 0.
+	full := []string{"--base-url", h.srv.URL, "--retries", "1"}
+	full = append(full, "search", "x", "--format", "json")
+	if code := Execute(full, strings.NewReader(""), &h.out, &h.err); code != 0 {
+		t.Fatalf("exit = %d, stderr=%s", code, h.err.String())
+	}
+	if calls != 2 {
+		t.Fatalf("expected 2 attempts, got %d", calls)
+	}
+}
+
+func TestUsageErrorsNeverTouchTheNetwork(t *testing.T) {
+	cases := [][]string{
+		{"search", "x", "-n", "0"},
+		{"search", "x", "-n", "51"},
+		{"search", "x", "--fill-missing"},
+		{"search", "x", "--limit", "-1"},
+		{"search", "x", "--fields", "nope"},
+		{"search", "x", "--format", "xml"},
+		{"fetch", "ftp://example.com/x"},
+		{"fetch", "https://user:pw@example.com/x"},
+		{"search", strings.Repeat("a", 129)},
+	}
+	for _, args := range cases {
+		h := newHarness(t)
+		if code := h.run(args...); code != ExitUsage {
+			t.Fatalf("%v -> exit %d, want 4 (stderr=%s)", args, code, h.err.String())
+		}
+		if h.hits != 0 {
+			t.Fatalf("%v hit the network", args)
+		}
+	}
+}
+
+func TestDryRunPrintsWithoutSending(t *testing.T) {
+	h := newHarness(t)
+	if code := h.run("search", "x", "--content", "--dry-run"); code != 0 {
+		t.Fatalf("exit = %d", code)
+	}
+	if h.hits != 0 {
+		t.Fatal("dry-run made a request")
+	}
+	if !strings.Contains(h.out.String(), "/v1/tools/search") || !strings.Contains(h.out.String(), `"need_content": true`) {
+		t.Fatalf("dry-run output = %s", h.out.String())
+	}
+	if strings.Contains(h.out.String(), "sk-test-key") {
+		t.Fatal("dry-run leaked the API key")
+	}
+}
+
+func TestFetchMultipleDedupeAndPacing(t *testing.T) {
+	h := newHarness(t)
+	h.handle = func(w http.ResponseWriter, r *http.Request) {
+		var req struct{ URL string }
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if strings.Contains(req.URL, "bad") {
+			w.WriteHeader(404)
+			fmt.Fprint(w, `{"error":{"message":"no markdown content","type":"invalid_request_error","code":"not_found"}}`)
+			return
+		}
+		fmt.Fprintf(w, `{"title":"T %s","content":"# %s"}`, req.URL, req.URL)
+	}
+	code := h.run("fetch", "https://ex.com/a", "https://ex.com/a#frag", "https://ex.com/a?utm_source=x", "--format", "json")
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr=%s", code, h.err.String())
+	}
+	// three inputs canonicalise to one URL -> one request
+	if h.hits != 1 {
+		t.Fatalf("expected 1 request after de-duplication, got %d", h.hits)
+	}
+	v := h.jsonOut(t)
+	if v["url"] != "https://ex.com/a" {
+		t.Fatalf("url = %v", v["url"])
+	}
+}
+
+func TestFetchPartialFailureWinsExitCode(t *testing.T) {
+	h := newHarness(t)
+	h.handle = func(w http.ResponseWriter, r *http.Request) {
+		var req struct{ URL string }
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if strings.Contains(req.URL, "bad") {
+			w.WriteHeader(404)
+			fmt.Fprint(w, `{"error":{"message":"no markdown content","type":"invalid_request_error","code":"not_found"}}`)
+			return
+		}
+		fmt.Fprintf(w, `{"title":"ok","content":"body"}`)
+	}
+	code := h.run("fetch", "https://ex.com/good", "https://ex.com/bad", "--format", "jsonl")
+	if code != ExitServer {
+		t.Fatalf("exit = %d, want %d", code, ExitServer)
+	}
+	lines := strings.Split(strings.TrimSpace(h.out.String()), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("lines = %d: %s", len(lines), h.out.String())
+	}
+	if !strings.Contains(lines[1], `"error"`) {
+		t.Fatalf("second line = %s", lines[1])
+	}
+}
+
+func TestFetchOffsetLimit(t *testing.T) {
+	h := newHarness(t)
+	h.handle = func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"title":"t","content":"0123456789"}`)
+	}
+	if code := h.run("fetch", "https://ex.com/doc", "--offset", "3", "--limit", "4", "--raw"); code != 0 {
+		t.Fatalf("exit = %d", code)
+	}
+	if got := strings.TrimSpace(h.out.String()); got != "3456" {
+		t.Fatalf("window = %q", got)
+	}
+}
+
+func TestCacheAvoidsSecondRequest(t *testing.T) {
+	h := newHarness(t)
+	h.handle = func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, searchResponse(1)) }
+	if code := h.run("search", "cached", "--format", "json"); code != 0 {
+		t.Fatalf("exit = %d", code)
+	}
+	if code := h.run("search", "cached", "--format", "json"); code != 0 {
+		t.Fatalf("exit = %d", code)
+	}
+	if h.hits != 1 {
+		t.Fatalf("expected 1 upstream request, got %d", h.hits)
+	}
+	// --no-cache must re-request
+	if code := h.run("search", "cached", "--format", "json", "--no-cache"); code != 0 {
+		t.Fatalf("exit = %d", code)
+	}
+	if h.hits != 2 {
+		t.Fatalf("--no-cache should hit upstream, got %d hits", h.hits)
+	}
+}
+
+func TestInitFromStdin(t *testing.T) {
+	h := newHarness(t)
+	t.Setenv("DEEPSEEK_API_KEY", "")
+	if code := h.runStdin("sk-abc123456789\n", "init", "--api-key-stdin", "--no-verify"); code != 0 {
+		t.Fatalf("exit = %d, stderr=%s", code, h.err.String())
+	}
+	cfgPath := filepath.Join(h.dir, "config.json")
+	info, err := os.Stat(cfgPath)
+	if err != nil {
+		t.Fatalf("config not written: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("config mode = %#o, want 0600", perm)
+	}
+	if h.out.String()+" "+h.err.String() == "" {
+		t.Fatal("no output")
+	}
+	// The key must never be printed in full.
+	if strings.Contains(h.out.String(), "sk-abc123456789") {
+		t.Fatalf("init leaked the key: %s", h.out.String())
+	}
+}
+
+func TestInitRefusesOverwriteWithoutForce(t *testing.T) {
+	h := newHarness(t)
+	t.Setenv("DEEPSEEK_API_KEY", "")
+	if code := h.runStdin("sk-first-000000\n", "init", "--api-key-stdin", "--no-verify"); code != 0 {
+		t.Fatalf("first init exit = %d", code)
+	}
+	if code := h.runStdin("sk-second-11111\n", "init", "--api-key-stdin", "--no-verify"); code != ExitUsage {
+		t.Fatalf("overwrite without --force exit = %d, want 4", code)
+	}
+	if code := h.runStdin("sk-second-11111\n", "init", "--api-key-stdin", "--no-verify", "--force"); code != 0 {
+		t.Fatalf("forced init exit = %d, stderr=%s", code, h.err.String())
+	}
+}
+
+func TestDoctorReportsMissingKey(t *testing.T) {
+	h := newHarness(t)
+	t.Setenv("DEEPSEEK_API_KEY", "")
+	if code := h.run("doctor"); code != ExitAuth {
+		t.Fatalf("exit = %d, want 2 (stderr=%s out=%s)", code, h.err.String(), h.out.String())
+	}
+}
+
+func TestDoctorProbeValidatesKey(t *testing.T) {
+	h := newHarness(t)
+	h.handle = func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/user/balance" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		fmt.Fprint(w, `{"is_available":true,"balance_infos":[{"currency":"CNY","total_balance":"42.00","granted_balance":"0.00","topped_up_balance":"42.00"}]}`)
+	}
+	if code := h.run("doctor", "--probe", "--format", "json"); code != 0 {
+		t.Fatalf("exit = %d, stderr=%s", code, h.err.String())
+	}
+	if !strings.Contains(h.out.String(), "42.00 CNY") {
+		t.Fatalf("balance missing from output: %s", h.out.String())
+	}
+}
+
+func TestVersionAndSkillEmbedded(t *testing.T) {
+	h := newHarness(t)
+	if code := h.run("version", "--format", "json"); code != 0 {
+		t.Fatalf("version exit = %d", code)
+	}
+	if !strings.Contains(h.out.String(), `"version"`) {
+		t.Fatalf("version output = %s", h.out.String())
+	}
+
+	h.out.Reset()
+	if code := h.run("skill", "print"); code != 0 {
+		t.Fatalf("skill print exit = %d", code)
+	}
+	if !strings.Contains(h.out.String(), "exit codes") && !strings.Contains(h.out.String(), "Exit codes") {
+		t.Fatalf("skill content looks wrong: %s", h.out.String()[:200])
+	}
+
+	dir := t.TempDir()
+	h.out.Reset()
+	if code := h.run("skill", "install", "--dir", dir); code != 0 {
+		t.Fatalf("skill install exit = %d, stderr=%s", code, h.err.String())
+	}
+	if _, err := os.Stat(filepath.Join(dir, "ds-tools", "SKILL.md")); err != nil {
+		t.Fatalf("skill not installed: %v", err)
+	}
+	if code := h.run("skill", "install", "--dir", dir); code != ExitUsage {
+		t.Fatalf("re-install without --force should fail with 4, got %d", code)
+	}
+}
+
+func TestCanonicalURL(t *testing.T) {
+	cases := map[string]string{
+		"https://Ex.com/a#x":                "https://ex.com/a",
+		"https://ex.com/a?utm_source=t&b=2": "https://ex.com/a?b=2",
+		"https://ex.com/":                   "https://ex.com",
+		"https://ex.com/a?fbclid=1&gclid=2": "https://ex.com/a",
+		"http://ex.com/x?ref=hn&keep=1":     "http://ex.com/x?keep=1",
+	}
+	for in, want := range cases {
+		if got := canonicalURL(in); got != want {
+			t.Errorf("canonicalURL(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestParseFields(t *testing.T) {
+	f, err := parseFields("score,site,url")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"rerank_score", "site_name", "url"}
+	if strings.Join(f, ",") != strings.Join(want, ",") {
+		t.Fatalf("fields = %v", f)
+	}
+	if _, err := parseFields("bogus"); err == nil {
+		t.Fatal("expected an error for an unknown field")
+	}
+	if f, err := parseFields(""); err != nil || f != nil {
+		t.Fatalf("empty spec should mean all fields: %v %v", f, err)
+	}
+}
+
+func TestHelpIsChinese(t *testing.T) {
+	h := newHarness(t)
+	if code := h.run("--help"); code != 0 {
+		t.Fatalf("exit = %d", code)
+	}
+	out := h.out.String()
+	for _, want := range []string{"用法：", "可用命令：", "选项：", "显示此命令的帮助信息"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("help 缺少中文标签 %q：\n%s", want, out)
+		}
+	}
+	if strings.Count(out, "  help ") != 1 {
+		t.Fatalf("help 命令应只出现一次：\n%s", out)
+	}
+
+	// 子命令的帮助里应出现 "全局选项："。
+	h.out.Reset()
+	if code := h.run("search", "--help"); code != 0 {
+		t.Fatalf("search --help exit = %d", code)
+	}
+	if !strings.Contains(h.out.String(), "全局选项：") {
+		t.Fatalf("search --help 缺少「全局选项：」：\n%s", h.out.String())
+	}
+	for _, english := range []string{"Available Commands:", "Global Flags:", "Usage:", "help for ds-tools", "Generate the autocompletion"} {
+		if strings.Contains(out, english) {
+			t.Fatalf("help 仍含英文 %q：\n%s", english, out)
+		}
+	}
+	// pflag 的默认值标记也必须中文化
+	if strings.Contains(out, "(default ") {
+		t.Fatalf("help 仍含 pflag 英文默认值标记：\n%s", out)
+	}
+	if !strings.Contains(out, "（默认 30s）") {
+		t.Fatalf("help 缺少中文默认值标记：\n%s", out)
+	}
+}
+
+func TestHelpCommandOrderAndGroups(t *testing.T) {
+	h := newHarness(t)
+	if code := h.run("--help"); code != 0 {
+		t.Fatalf("exit = %d", code)
+	}
+	out := h.out.String()
+
+	order := []string{"fetch", "search", "init", "config", "doctor", "cache", "skill", "help", "version"}
+	prev := -1
+	for _, name := range order {
+		i := strings.Index(out, "\n  "+name)
+		if i < 0 {
+			t.Fatalf("help 缺少命令 %q：\n%s", name, out)
+		}
+		if i <= prev {
+			t.Fatalf("命令 %q 顺序错误：\n%s", name, out)
+		}
+		prev = i
+	}
+	for _, name := range []string{"init", "cache", "help"} {
+		if !strings.Contains(out, "\n\n  "+name) {
+			t.Fatalf("命令组 %q 前缺少空行：\n%s", name, out)
+		}
+	}
+	for _, name := range []string{"search", "config", "doctor", "skill", "version"} {
+		if strings.Contains(out, "\n\n  "+name) {
+			t.Fatalf("命令 %q 不应另起一组：\n%s", name, out)
+		}
+	}
+}
+
+func TestErrorsAndUnknownCommandAreChinese(t *testing.T) {
+	cases := []struct {
+		args []string
+		want []string
+	}{
+		{[]string{"bogus"}, []string{"未知命令", `"bogus"`}},
+		{[]string{"search", "x", "--nope"}, []string{"未知选项", "--nope"}},
+		{[]string{"search", "x", "--count", "abc"}, []string{"参数值", `"abc"`}},
+		{[]string{"config", "set", "onlyone"}, []string{"需要 2 个参数"}},
+		{[]string{"help", "bogus"}, []string{"没有", `"bogus"`}},
+	}
+	for _, c := range cases {
+		h := newHarness(t)
+		if code := h.run(c.args...); code != ExitUsage {
+			t.Fatalf("%v -> exit %d, want 4 (stderr=%s)", c.args, code, h.err.String())
+		}
+		for _, want := range c.want {
+			if !strings.Contains(h.err.String(), want) {
+				t.Fatalf("%v 的错误信息缺少 %q：%s", c.args, want, h.err.String())
+			}
+		}
+	}
+}
