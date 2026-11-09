@@ -2,3 +2,5 @@ bin/
 dist/
 *.test
 .DS_Store
+build.sh
+install.sh
