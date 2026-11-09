@@ -15,17 +15,20 @@ version                [--json]
 
 ## 构建与安装
 
-```bash
-./build.sh                # 校验源码 + 交叉编译 5 平台 + checksums/manifest
-./build.sh v0.1.0         # 指定版本
+当前未发布预编译包，以下为从源码构建的方式。需要 `go`（版本见 `go.mod`）和 bash；安装仅支持 macOS / Linux。
 
-./install.sh              # 安装最新版本的二进制 + Agent Skill
-./install.sh --prefix /tmp/ds --no-skill   # 隔离安装
+```bash
+./dev.sh                          # 交互菜单：构建 / 安装 / 构建后安装
+./dev.sh build v0.1.0             # 格式化 + vet/test，交叉编译 5 平台 + checksums/manifest
+./dev.sh install                  # 安装最近一次构建的二进制 + Agent Skill
+./dev.sh install --prefix /tmp/ds --no-skill   # 隔离安装
+./dev.sh all v0.1.0               # 构建后立即安装
+./dev.sh --help                   # 完整用法
 ```
 
-`install.sh` 会校验 checksum、原子替换二进制、验证版本，默认装到 `PATH` 内第一个可写目录（`/opt/homebrew/bin`、`/usr/local/bin`、`~/.local/bin`、`~/bin`）。
+`build` 产物写入 `dist/release/<version>/`；`install` 会校验 checksum、原子替换二进制、验证版本，默认装到 `PATH` 内第一个可写目录（`/opt/homebrew/bin`、`/usr/local/bin`、`~/.local/bin`、`~/bin`）。Windows 只支持构建，安装需手动复制产物。
 
-开发快捷方式：`make build` / `make test`。
+开发快捷方式：`make build` / `make test`（仅本机，不生成发布产物）。
 
 ## 初始化
 
