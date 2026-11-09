@@ -97,7 +97,7 @@ func (a *App) runDoctor(ctx context.Context, probe bool) error {
 	}
 
 	// 5. Cache.
-	if dir, err := config.CacheDir(); err == nil {
+	if dir, err := a.cacheDir(); err == nil {
 		c := cache.New(dir, a.cacheTTL)
 		files, bytes := c.Stats()
 		checks = append(checks, check{"cache", "ok", fmt.Sprintf("%s（%d 个条目，%s，TTL %s）", dir, files, humanBytes(bytes), a.cacheTTL)})

@@ -4,8 +4,6 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
-
-	"dstools/internal/config"
 )
 
 func (a *App) newCacheCmd() *cobra.Command {
@@ -28,7 +26,7 @@ func (a *App) newCachePathCmd() *cobra.Command {
 		Short: "打印缓存目录",
 		Args:  cobra.NoArgs,
 		RunE: func(*cobra.Command, []string) error {
-			dir, err := config.CacheDir()
+			dir, err := a.cacheDir()
 			if err != nil {
 				return err
 			}

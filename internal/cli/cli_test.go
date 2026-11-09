@@ -353,6 +353,40 @@ func TestCacheAvoidsSecondRequest(t *testing.T) {
 	}
 }
 
+func TestCacheDirFollowsConfigFlag(t *testing.T) {
+	h := newHarness(t)
+	h.handle = func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, searchResponse(1)) }
+
+	// A --config file that is neither named config.json nor in the default dir.
+	cfgPath := filepath.Join(h.dir, "custom-name.json")
+	for range 2 {
+		if code := h.run("--config", cfgPath, "search", "cached", "--format", "json"); code != 0 {
+			t.Fatalf("exit = %d", code)
+		}
+	}
+	if h.hits != 1 {
+		t.Fatalf("expected a cache hit, got %d upstream requests", h.hits)
+	}
+	if _, err := os.Stat(filepath.Join(h.dir, "cache")); err != nil {
+		t.Fatalf("cache dir not next to --config: %v", err)
+	}
+	if fi, err := os.Stat(cfgPath); err == nil && fi.IsDir() {
+		t.Fatalf("cache was written under the config file path %s", cfgPath)
+	}
+}
+
+func TestCachePathExpandsTildeConfig(t *testing.T) {
+	h := newHarness(t)
+	t.Setenv("HOME", h.dir)
+	if code := h.run("--config", "~/conf/custom.json", "cache", "path"); code != 0 {
+		t.Fatalf("exit = %d", code)
+	}
+	want := filepath.Join(h.dir, "conf", "cache")
+	if got := strings.TrimSpace(h.out.String()); got != want {
+		t.Fatalf("cache path = %q, want %q", got, want)
+	}
+}
+
 func TestInitFromStdin(t *testing.T) {
 	h := newHarness(t)
 	t.Setenv("DEEPSEEK_API_KEY", "")

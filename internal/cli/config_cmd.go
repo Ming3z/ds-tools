@@ -55,7 +55,7 @@ func (a *App) newConfigShowCmd() *cobra.Command {
 			if a.cfgErr != nil {
 				return a.cfgErr
 			}
-			cacheDir, _ := config.CacheDir()
+			cacheDir, _ := a.cacheDir()
 			rows := []kv{
 				{"config_file", a.cfgPath},
 				{"config_dir", filepath.Dir(a.cfgPath)},

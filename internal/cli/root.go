@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -279,14 +280,21 @@ func (a *App) client() (*deepseek.Client, error) {
 	return deepseek.NewClient(a.baseURL, a.apiKey, a.timeout, a.retries), nil
 }
 
+// cacheDir returns the cache directory rooted next to the resolved config
+// file. Deriving from cfgPath (not a.fConfig) handles relative paths, "~/…"
+// and config files that are not named config.json.
+func (a *App) cacheDir() (string, error) {
+	if a.cfgPath != "" {
+		return filepath.Join(filepath.Dir(a.cfgPath), "cache"), nil
+	}
+	return config.CacheDir()
+}
+
 // cacheStore returns the on-disk cache rooted next to the config file.
 func (a *App) cacheStore() *cache.Cache {
-	dir, err := config.CacheDir()
+	dir, err := a.cacheDir()
 	if err != nil {
 		return cache.New("", 0)
-	}
-	if a.fConfig != "" {
-		dir = strings.TrimSuffix(a.fConfig, "/config.json") + "/cache"
 	}
 	return cache.New(dir, a.cacheTTL)
 }
