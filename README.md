@@ -121,3 +121,7 @@ internal/skill/      内嵌 SKILL.md
 ```
 
 限速：Search 100 QPS，Fetch 25 QPS（账号级、按目标域名），故 `--jobs` 默认 4。
+
+## License
+
+[MIT](LICENSE)
