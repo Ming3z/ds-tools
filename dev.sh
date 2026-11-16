@@ -30,7 +30,7 @@ VERSION：
 
 产物写入 dist/release/<version>/（checksums.txt + manifest.json）。
 安装目录：--prefix；否则 PATH 内首个可写目录；都没有则 ~/.local/bin。
-不发布、不使用 sudo、不修改 PATH；Skill 默认安装，--no-skill 可跳过。
+不发布、不使用 sudo、不修改 PATH；Skill 默认装到 ~/.claude/skills，--no-skill 可跳过。
 EOF
 }
 
@@ -486,7 +486,7 @@ run_install() {
         printf '\n提示：%s 不在 PATH 中，请加入后重开终端，例如：\n' "$prefix"
         printf '  export PATH="%s:$PATH"\n' "$prefix"
     fi
-    printf '下一步：%s init && %s doctor --probe\n' "$BINARY_NAME" "$BINARY_NAME"
+    printf '下一步：%s init（向导会校验 Key 与余额）\n' "$BINARY_NAME"
 }
 
 ACTION=""

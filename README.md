@@ -27,40 +27,11 @@ ds-tools tts "你好，我是 DeepSeek。" -o hello.wav
 暂未发布预编译包。需要 Go（版本见 `go.mod`）与 bash；安装支持 macOS / Linux，Windows 仅构建。
 
 ```bash
-./dev.sh all v0.1.0     # 构建并安装二进制 + Skill
-ds-tools init           # 交互向导；非交互用 --api-key-stdin < key.txt
-ds-tools doctor --probe # 校验 Key 与余额
+./dev.sh all v0.1.0     # 构建并安装二进制 + Skill（默认 ~/.claude/skills）
+ds-tools init           # 交互式写入配置；脚本用 --api-key-stdin < key.txt
 ```
 
-**配置**
-
-```bash
-# API Key 优先级：--api-key > DEEPSEEK_API_KEY > 配置文件
-# 配置文件默认：<用户配置目录>/ds-tools/config.json
-# 可用 --config 或 DS_TOOLS_CONFIG 指定
-ds-tools config show              # 生效值、来源与文件原值（Key 脱敏）
-ds-tools config set timeout 60s   # 修改配置
-ds-tools config unset timeout     # 移除配置项
-```
-
-**Agent 接入**
-
-```bash
-ds-tools skill install --all   # 安装到全部三个 Agent skills 目录
-ds-tools skill status          # 检查安装状态，以及是否与当前版本一致
-```
-
-不提供 MCP：CLI + Skill 覆盖终端与能执行 shell 的 Agent。
-
-**开发**
-
-```bash
-make build                  # 本机构建，不生成发布产物
-make test                   # 本机测试
-./dev.sh build v0.1.0       # 生成 5 平台产物到 dist/release/<version>/
-./dev.sh install            # 安装最近一次构建
-./dev.sh --help             # 完整用法
-```
+完整命令与参数见 `ds-tools --help` 与 `ds-tools <command> --help`。
 
 ## 命令
 
@@ -71,14 +42,17 @@ make test                   # 本机测试
 | `ocr` | 文档 / 图片转文字 |
 | `asr` | 音频转文字 |
 | `tts` | 文字转语音 |
-| `init` | 写入 API Key |
+| `init` | 写入配置（交互向导） |
 | `config` | 查看 / 修改配置 |
 | `doctor` | 配置自检；`--probe` 校验 Key 与余额 |
 | `cache` | 查看 / 清空本地缓存 |
-| `skill` | 输出 / 安装 Agent Skill |
+| `skill` | 安装 / 检查 Agent Skill |
 | `version` | 显示版本 |
 
 - `search` 到 `tts` 为 API 命令；计费以 [官方文档](https://api-docs.deepseek.com/zh-cn/guides/search/) 为准，`search` 的 `-n` 与 `--content` 不影响单价。
+- 配置文件默认 `<用户配置目录>/ds-tools/config.json`，可用 `--config` 或 `DS_TOOLS_CONFIG` 指定；Key 优先级见 `ds-tools config --help`。
+- Agent 接入：`ds-tools skill install --all` 安装到全部三个 skills 目录，`ds-tools skill status` 检查内容是否与当前版本一致。
+- 不提供 MCP：CLI + Skill 覆盖终端与能执行 shell 的 Agent。
 - 其余为配置与辅助命令；详细用法见 `ds-tools <command> -h`。
 
 ## 退出码
@@ -93,6 +67,16 @@ make test                   # 本机测试
 
 - 408 / 429 / 5xx 默认重试 2 次；
 - `--error-format json` 时，stderr 输出 JSON 错误。
+
+## 开发
+
+```bash
+make build                  # 本机构建，不生成发布产物
+make test                   # 本机测试
+./dev.sh build v0.1.0       # 生成 5 平台产物到 dist/release/<version>/
+./dev.sh install            # 安装最近一次构建
+./dev.sh --help             # 完整用法
+```
 
 ## License
 
