@@ -22,14 +22,19 @@ ds-tools tts "你好，我是 DeepSeek。" -o hello.wav
 - `--format` 支持 `text`、`json`、`jsonl`、`md`（`tts` 仅 `text` / `json` / `jsonl`）。
 - `search` / `fetch` 终端默认 `text`、管道默认 `json`，`ocr` / `asr` 默认 `text`。`--fields` 可做字段投影。
 
-## 快速开始
+## 安装
 
-暂未发布预编译包。需要 Go（版本见 `go.mod`）与 bash；安装支持 macOS / Linux，Windows 仅构建。
+macOS / Linux（需 Node.js ≥ 18）：
 
 ```bash
-./dev.sh all v0.1.0     # 构建并安装二进制 + Skill（默认 ~/.claude/skills）
-ds-tools init           # 交互式写入配置；脚本用 --api-key-stdin < key.txt
+npm install -g ds-tools
+ds-tools skill install --all   # 为 Claude Code / Pi 等 Agent 安装 SKILL.md
+ds-tools init                  # 交互式写入配置；脚本用 --api-key-stdin < key.txt
 ```
+
+- 没装 Node.js：从 [Releases](https://github.com/Ming3z/ds-tools/releases) 下载对应平台的静态二进制放入 PATH。
+- Windows：暂未验证运行时，仅提供构建产物。
+- 从源码构建：需要 Go（版本见 `go.mod`）与 bash，`./dev.sh all v1.0.0`。
 
 完整命令与参数见 `ds-tools --help` 与 `ds-tools <command> --help`。
 
@@ -71,12 +76,21 @@ ds-tools init           # 交互式写入配置；脚本用 --api-key-stdin < ke
 ## 开发
 
 ```bash
-make build                  # 本机构建，不生成发布产物
-make test                   # 本机测试
-./dev.sh build v0.1.0       # 生成 5 平台产物到 dist/release/<version>/
-./dev.sh install            # 安装最近一次构建
-./dev.sh --help             # 完整用法
+make build                              # 本机构建，不生成发布产物
+make test                               # 本机测试
+./dev.sh build v1.0.0                   # 生成 5 平台产物到 dist/release/<version>/
+./dev.sh install                        # 安装最近一次构建
+./scripts/prepare-npm.sh --version v1.0.0  # 生成 dist/npm/ 包目录，可 npm pack 验证
+./dev.sh --help                         # 完整用法
 ```
+
+### 发布 v1.0.0
+
+1. 在仓库 Secrets 添加 `NPM_TOKEN`（npm Automation 或 Granular token，可发布 `ds-tools*`）。
+2. 打 tag 并推送：`git tag v1.0.0 && git push origin v1.0.0`。
+3. `.github/workflows/release.yml` 会构建 5 平台产物、创建 GitHub Release，并按“平台包 → 主包”顺序发布 5 个 npm 包（公开仓库自动带 provenance）。
+
+npm 版本不可覆盖：发布失败需修好后升版本号重发；`dist/npm/` 与 `dist/release/` 均不入库。
 
 ## License
 
