@@ -93,7 +93,7 @@ esac
 rm -rf -- "$OUT"
 mkdir -p "$OUT"
 
-printf '==> 生成顶层包 ds-tools@%s\n' "$SEMVER"
+printf '==> 生成顶层包 @youmkdev/ds-tools@%s\n' "$SEMVER"
 mkdir -p "$OUT/ds-tools/bin"
 sed "s/__VERSION__/$SEMVER/g" \
     "$REPOSITORY_ROOT/npm/ds-tools/package.json.tmpl" > "$OUT/ds-tools/package.json"

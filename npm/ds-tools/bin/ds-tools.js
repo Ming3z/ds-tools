@@ -36,7 +36,7 @@ try {
   const pkgDir = path.dirname(require.resolve(`${pkg}/package.json`));
   binary = path.join(pkgDir, "bin", "ds-tools");
 } catch {
-  fail(`缺少平台包 ${pkg}，请重新安装：npm install -g ds-tools`);
+  fail(`缺少平台包 ${pkg}，请重新安装：npm install -g @youmkdev/ds-tools`);
 }
 
 const child = spawn(binary, process.argv.slice(2), { stdio: "inherit" });

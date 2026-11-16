@@ -27,7 +27,7 @@ ds-tools tts "你好，我是 DeepSeek。" -o hello.wav
 macOS / Linux（需 Node.js ≥ 18）：
 
 ```bash
-npm install -g ds-tools
+npm install -g @youmkdev/ds-tools
 ds-tools skill install --all   # 为 Claude Code / Pi 等 Agent 安装 SKILL.md
 ds-tools init                  # 交互式写入配置；脚本用 --api-key-stdin < key.txt
 ```
@@ -84,16 +84,23 @@ make test                               # 本机测试
 ./dev.sh --help                         # 完整用法
 ```
 
-### 发布 v1.0.0
+### 发布
 
-1. npm 账号开启 2FA，创建 Granular Access Token：`Read and write (publish and stage)`、All Packages、勾选 Bypass 2FA、有效期 90 天。
-2. 写入仓库 Secret：`gh secret set NPM_TOKEN --repo Ming3z/ds-tools`（交互粘贴，勿写进命令行）。
-3. 打 tag 并推送：`git tag v1.0.0 && git push origin v1.0.0`。
-4. `.github/workflows/release.yml` 会构建 5 平台产物、创建 GitHub Release，并按“平台包 → 主包”顺序发布 5 个 npm 包（公开仓库自动带 provenance）。
+npm 包名：顶层 `@youmkdev/ds-tools`，平台包 `ds-tools-<os>-<arch>`（`ds-tools` 与已有 `dstools` 过于相似，registry 拒绝）。
+
+首次发布：
+
+1. 推 tag 触发 `.github/workflows/release.yml`：构建 5 平台产物、创建 GitHub Release、提交 5 个 npm 包；需要仓库 Secret `NPM_TOKEN`。
+2. bypass-2FA token 目前只能 staged：在 npmjs.com「Staged Packages」批次批准 4 个平台包（一次 2FA）。
+3. 平台包上线后发布顶层包（本地交互 2FA）：
+   ```bash
+   npm login
+   npm publish dist/npm/ds-tools --access public
+   ```
+
+后续版本：为 5 个包配置 Trusted Publishing（GitHub Actions、`Ming3z/ds-tools`、`release.yml`、允许 `npm publish`），删除 `NPM_TOKEN` secret 后由 OIDC 直接发布，不再需要 staged 批准。
 
 npm 版本不可覆盖：发布失败需修好后升版本号重发；`dist/npm/` 与 `dist/release/` 均不入库。
-
-发布成功后为 5 个包配置 Trusted Publishing（GitHub Actions、`release.yml`），随后撤销 token：2FA-bypass token 的直接发布能力将在 2027-01 左右取消，OIDC 发布是长期方案。
 
 ## License
 
