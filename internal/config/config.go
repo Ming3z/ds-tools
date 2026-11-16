@@ -8,7 +8,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -242,29 +241,4 @@ func PermWarning(path string) error {
 		return fmt.Errorf("配置文件权限为 %#o，应为 0600（执行：chmod 600 %s）", info.Mode().Perm(), path)
 	}
 	return nil
-}
-
-// NonZeroKeys lists the keys currently set in the config file.
-func (c *Config) NonZeroKeys() []string {
-	var out []string
-	if c == nil {
-		return out
-	}
-	if c.APIKey != "" {
-		out = append(out, "api_key")
-	}
-	if c.BaseURL != "" {
-		out = append(out, "base_url")
-	}
-	if c.Timeout != "" {
-		out = append(out, "timeout")
-	}
-	if c.Retries != nil {
-		out = append(out, "retries")
-	}
-	if c.CacheTTL != "" {
-		out = append(out, "cache_ttl")
-	}
-	sort.Strings(out)
-	return out
 }

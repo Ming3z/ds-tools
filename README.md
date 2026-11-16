@@ -40,9 +40,9 @@ ds-tools doctor --probe # 校验 Key 与余额
 # API Key 优先级：--api-key > DEEPSEEK_API_KEY > 配置文件
 # 配置文件默认：<用户配置目录>/ds-tools/config.json
 # 可用 --config 或 DS_TOOLS_CONFIG 指定
-ds-tools config path              # 配置文件路径
-ds-tools config show              # 当前配置（Key 脱敏）
+ds-tools config show              # 生效值、来源与文件原值（Key 脱敏）
 ds-tools config set timeout 60s   # 修改配置
+ds-tools config unset timeout     # 移除配置项
 ```
 
 **Agent 接入**

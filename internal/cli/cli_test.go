@@ -578,6 +578,92 @@ func TestHelpCommandOrderAndGroups(t *testing.T) {
 	}
 }
 
+func TestConfigHelpDropsRedundantCommands(t *testing.T) {
+	h := newHarness(t)
+	if code := h.run("config", "--help"); code != 0 {
+		t.Fatalf("exit = %d", code)
+	}
+	out := h.out.String()
+	for _, gone := range []string{"\n  clear-key ", "\n  path "} {
+		if strings.Contains(out, gone) {
+			t.Fatalf("config 帮助仍包含 %q：\n%s", gone, out)
+		}
+	}
+	for _, want := range []string{"\n  set ", "\n  show ", "\n  unset "} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("config 帮助缺少 %q：\n%s", want, out)
+		}
+	}
+}
+
+func TestConfigShowReportsSourcesAndFileValues(t *testing.T) {
+	h := newHarness(t)
+	if code := h.run("config", "set", "timeout", "45s"); code != 0 {
+		t.Fatalf("config set exit = %d, stderr=%s", code, h.err.String())
+	}
+	if code := h.run("config", "show", "--format", "text"); code != 0 {
+		t.Fatalf("config show exit = %d, stderr=%s", code, h.err.String())
+	}
+	out := h.out.String()
+	for _, want := range []string{
+		"config_file_exists", "true",
+		"config_file_mode", "0600",
+		"45s", "source=config", "file=45s",
+		"source=env", "file=(未设置)",
+		"sk-tes…-key",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("config show 输出缺少 %q：\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "sk-test-key") {
+		t.Fatalf("config show 泄漏了完整 Key：\n%s", out)
+	}
+}
+
+func TestConfigShowJSON(t *testing.T) {
+	h := newHarness(t)
+	if code := h.run("config", "show", "--format", "json"); code != 0 {
+		t.Fatalf("config show exit = %d, stderr=%s", code, h.err.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(h.out.Bytes(), &got); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, h.out.String())
+	}
+	if got["config_file_exists"] != false {
+		t.Fatalf("config_file_exists = %v, want false", got["config_file_exists"])
+	}
+	if got["config_file_mode"] != nil {
+		t.Fatalf("config_file_mode = %v, want null", got["config_file_mode"])
+	}
+	if got["api_key"] != "sk-tes…-key" {
+		t.Fatalf("api_key = %v, want masked", got["api_key"])
+	}
+	if got["api_key_file"] != nil {
+		t.Fatalf("api_key_file = %v, want null", got["api_key_file"])
+	}
+	if got["timeout_source"] != "default" {
+		t.Fatalf("timeout_source = %v, want default", got["timeout_source"])
+	}
+
+	if code := h.run("config", "set", "timeout", "45s"); code != 0 {
+		t.Fatalf("config set exit = %d", code)
+	}
+	if code := h.run("config", "show", "--format", "json"); code != 0 {
+		t.Fatalf("config show exit = %d", code)
+	}
+	got = nil
+	if err := json.Unmarshal(h.out.Bytes(), &got); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if got["config_file_exists"] != true || got["config_file_mode"] != "0600" {
+		t.Fatalf("config file state = %v/%v", got["config_file_exists"], got["config_file_mode"])
+	}
+	if got["timeout"] != "45s" || got["timeout_source"] != "config" || got["timeout_file"] != "45s" {
+		t.Fatalf("timeout view = %v/%v/%v", got["timeout"], got["timeout_source"], got["timeout_file"])
+	}
+}
+
 func TestErrorsAndUnknownCommandAreChinese(t *testing.T) {
 	cases := []struct {
 		args []string

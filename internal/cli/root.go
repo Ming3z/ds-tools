@@ -45,19 +45,22 @@ type App struct {
 	fErrorFormat string
 
 	// resolved state
-	cfg      *config.Config
-	cfgPath  string
-	cfgErr   error
-	apiKey   string
-	keySrc   string
-	baseURL  string
-	baseSrc  string
-	timeout  time.Duration
-	retries  int
-	cacheTTL time.Duration
-	format   string
-	fields   []string
-	color    bool
+	cfg         *config.Config
+	cfgPath     string
+	cfgErr      error
+	apiKey      string
+	keySrc      string
+	baseURL     string
+	baseSrc     string
+	timeout     time.Duration
+	retries     int
+	cacheTTL    time.Duration
+	timeoutSrc  string
+	retriesSrc  string
+	cacheTTLSrc string
+	format      string
+	fields      []string
+	color       bool
 
 	// formatSet and timeoutSet report whether the user (via flag, env, or
 	// config) chose the value. Tool commands use this to apply their own
@@ -244,19 +247,30 @@ func (a *App) load(cmd *cobra.Command) error {
 
 	timeout, retries, ttl := cfg.ResolvedTimeouts()
 	a.timeout, a.retries, a.cacheTTL = timeout, retries, ttl
+	a.timeoutSrc, a.retriesSrc, a.cacheTTLSrc = "default", "default", "default"
 	if f := cmd.Flags().Lookup("timeout"); f != nil && f.Changed {
 		a.timeout = a.fTimeout
+		a.timeoutSrc = "flag"
 		a.timeoutSet = true
-	}
-	// A config-file timeout is also an explicit choice: do not override it
-	// with the OCR/ASR/TTS per-command defaults.
-	if cfg.Timeout != "" && !a.timeoutSet {
+	} else if cfg.Timeout != "" && !a.timeoutSet {
+		// A config-file timeout is also an explicit choice: do not override it
+		// with the OCR/ASR/TTS per-command defaults.
 		if d, err := time.ParseDuration(cfg.Timeout); err == nil && d > 0 {
+			a.timeoutSrc = "config"
 			a.timeoutSet = true
 		}
 	}
+	if cfg.Retries != nil {
+		a.retriesSrc = "config"
+	}
 	if f := cmd.Flags().Lookup("retries"); f != nil && f.Changed {
 		a.retries = a.fRetries
+		a.retriesSrc = "flag"
+	}
+	if cfg.CacheTTL != "" {
+		if _, err := time.ParseDuration(cfg.CacheTTL); err == nil {
+			a.cacheTTLSrc = "config"
+		}
 	}
 	if a.retries < 0 {
 		return usageErrf("--retries 必须 >= 0")
