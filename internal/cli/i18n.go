@@ -190,7 +190,7 @@ var templateFuncs = template.FuncMap{
 // rendered with a blank line between blocks; unknown commands fall through to
 // a final alphabetical block so adding a command never hides it.
 var helpCommandOrder = [][]string{
-	{"fetch", "search"},
+	{"fetch", "search", "ocr", "asr", "tts"},
 	{"init", "config", "doctor"},
 	{"cache", "skill"},
 	{"help", "version"},

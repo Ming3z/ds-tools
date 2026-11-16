@@ -13,57 +13,6 @@ import (
 	"dstools/internal/deepseek"
 )
 
-// canonicalFields is the official response schema, in API order.
-var canonicalFields = []string{
-	"title", "url", "snippet", "summary", "content",
-	"site_name", "site_icon", "date", "rerank_score", "authority",
-}
-
-var fieldAliases = map[string]string{
-	"score": "rerank_score",
-	"site":  "site_name",
-	"icon":  "site_icon",
-}
-
-func parseFields(spec string) ([]string, error) {
-	spec = strings.TrimSpace(spec)
-	if spec == "" {
-		return nil, nil
-	}
-	seen := map[string]bool{}
-	var out []string
-	for _, raw := range strings.Split(spec, ",") {
-		f := strings.ToLower(strings.TrimSpace(raw))
-		if f == "" {
-			continue
-		}
-		if real, ok := fieldAliases[f]; ok {
-			f = real
-		}
-		if !knownField(f) {
-			return nil, usageErrf("--fields 中的 %q 无效（可选：%s）", f, strings.Join(canonicalFields, "、"))
-		}
-		if seen[f] {
-			continue
-		}
-		seen[f] = true
-		out = append(out, f)
-	}
-	if len(out) == 0 {
-		return nil, usageErrf("--fields 至少要指定一个字段")
-	}
-	return out, nil
-}
-
-func knownField(f string) bool {
-	for _, c := range canonicalFields {
-		if c == f {
-			return true
-		}
-	}
-	return false
-}
-
 // kv / obj implement order-preserving JSON objects so that --fields projections
 // keep the requested field order instead of Go's alphabetical map order.
 type kv struct {

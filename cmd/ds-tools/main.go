@@ -1,4 +1,5 @@
-// Command ds-tools wraps DeepSeek's Search and Fetch APIs for agents and scripts.
+// Command ds-tools wraps DeepSeek's Search, Fetch, OCR, ASR and TTS APIs for
+// agents and scripts.
 package main
 
 import (

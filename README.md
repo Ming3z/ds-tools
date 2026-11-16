@@ -1,16 +1,26 @@
 # ds-tools
 
-把 [DeepSeek Search / Fetch API](https://api-docs.deepseek.com/zh-cn/guides/search/) 封装成单个静态二进制，供 Agent 与脚本调用。CLI 提供能力，内嵌的 [`SKILL.md`](internal/skill/SKILL.md) 提供 Agent 使用契约。
+把 [DeepSeek Search / Fetch](https://api-docs.deepseek.com/zh-cn/guides/search/) 与
+[OCR](https://api-docs.deepseek.com/zh-cn/guides/ocr) /
+[ASR](https://api-docs.deepseek.com/zh-cn/guides/asr) /
+[TTS](https://api-docs.deepseek.com/zh-cn/guides/tts) API 封装成单个静态二进制，供 Agent 与脚本调用。CLI 提供能力，内嵌的 [`SKILL.md`](internal/skill/SKILL.md) 提供 Agent 使用契约。
 
 ```
+fetch   <url...|->     POST /v1/tools/fetch
+search  <query|->      POST /v1/tools/search
+ocr     <file|->       POST /v1/tools/ocr
+asr     <file|->       POST /v1/tools/asr
+tts     <text|->       POST /v1/tools/tts
+
 init                   写入并校验 API Key
 config  path|show|set|unset|clear-key
-search  <query|->      POST /v1/tools/search
-fetch   <url...|->     POST /v1/tools/fetch
 doctor                 配置 / 鉴权 / 余额自检
+
 cache   clear|path     本地响应缓存
 skill   print|install  内嵌的 Agent Skill
-version                [--json]
+
+help                   显示任何命令的帮助信息
+version                [--format json]
 ```
 
 ## 构建与安装
@@ -60,15 +70,42 @@ ds-tools fetch -f urls.txt --jobs 4 -o pages/
 
 # 长文分段读取
 ds-tools fetch https://long.doc --offset 8000 --limit 8000
+
+# OCR：扫描件 / 文档 -> 文本
+ds-tools ocr scan.pdf
+ds-tools ocr report.docx --purpose rich_layout_recognition --format md -o report.md
+ds-tools ocr scan.pdf --page 1-3 --format jsonl
+
+# ASR：音频 -> 文本
+ds-tools asr speech.wav
+ds-tools asr speech.ogg --format json
+cat speech.wav | ds-tools asr - -o speech.txt
+
+# TTS：文本 -> 音频
+ds-tools tts "你好，我是 DeepSeek。" -o hello.wav
+ds-tools tts - < article.md > speech.wav
+ds-tools tts "..." --voice tide --audio-format pcm -o hello.pcm
 ```
 
-计费按「成功且有结果」的请求计次，与 `--count`、`--content` 无关，所以读正文优先用 `search --content`，`fetch` 只用于已知 URL。
+Search/Fetch 按「成功且有结果」的请求计次，与 `--count`、`--content` 无关，所以读正文优先用 `search --content`，`fetch` 只用于已知 URL。OCR 按成功页数、ASR 按音频时长、TTS 按计费字符计费。
 
 ### 输出格式
 
-`--format text|json|jsonl|md`，默认终端 `text`、管道 `json`。
-`--fields` 做字段投影，别名 `score`→`rerank_score`、`site`→`site_name`。
-`md` 输出带标题、来源 URL 与最佳正文（`content` > `summary` > `snippet`）。
+`--format text|json|jsonl|md`。Search/Fetch 默认终端 `text`、管道 `json`；OCR/ASR 未显式指定时始终 `text`，需要结构化结果时显式 `--format json`；TTS 的 `--format` 只控制写入文件后的元信息，音频始终是二进制。
+`--fields` 做字段投影；Search 支持别名 `score`→`rerank_score`、`site`→`site_name`。OCR 的 JSON 字段为 `id,object,created,purpose,page_count,pages,usage,text`，JSONL 字段为 `index,text,finish_reason`；ASR 字段为 `request_id,text,duration_ms`。
+Search/Fetch 的 `md` 输出带标题、来源 URL 与最佳正文（`content` > `summary` > `snippet`）；OCR 的 `md` 每页带 `## 第 N 页`，ASR 的 `md` 带时长。
+
+### OCR / ASR / TTS 限制
+
+| 工具 | 输入限制 | 输出 | 默认超时 | 计费 |
+|---|---|---|---|---|
+| `ocr` | PDF/DOC/DOCX/PPT/PPTX/图片，≤100 MiB，≤1000 页 | 按页文本 | 210s | ¥1.5 / 1000 页 |
+| `asr` | 16 位 PCM WAV 或 Ogg Opus，≤8 MiB，≤120 秒 | 转写文本 | 300s | ¥0.39 / 小时（限时 5 折） |
+| `tts` | ≤10,000 计费字符（汉字算 2），请求体 ≤64 KiB | WAV / PCM 音频 | 600s | ¥1.5 / 10,000 字符（限时 5 折） |
+
+OCR 的 `--purpose rich_layout_recognition` 会逐页识别并保留 `<｜ref｜>`/`<｜box｜>` 坐标标记；默认 `text_recognition` 对不含图片的 Word/PPT 直接提取文字。`--page` 是 1-based，支持 `1-3,5`、`5-`、`-3`。
+ASR 会在本地校验 WAV 头（16 bit PCM、采样率、时长）或 Ogg Opus 魔数，避免无效请求。
+TTS 音频可用 `-o file` 写文件，或在 stdout 是管道时直接输出：`ds-tools tts "..." > speech.wav`。终端下没有 `-o` 会拒绝执行。
 
 ### 搜索语法
 
@@ -94,7 +131,7 @@ ds-tools fetch https://long.doc --offset 8000 --limit 8000
 | 3 | 网络错误（DNS/连接/TLS/超时） |
 | 4 | 本地用法错误，未发出请求、未计费 |
 
-408/429/5xx 自动重试（默认 2 次，遵循 `Retry-After`）。加 `--error-format json` 时 stderr 为 `{"status","type","code","retryable","message"}`。
+408/429/5xx 自动重试（默认 2 次，遵循 `Retry-After`；TTS 只在收到音频前重试）。加 `--error-format json` 时 stderr 为 `{"status","type","code","retryable","message"}`。
 
 ## Agent 接入
 
@@ -116,14 +153,16 @@ ds-tools skill install --dir ~/.pi/agent/skills
 
 ```
 cmd/ds-tools/        入口
-internal/cli/        命令、渲染、退出码映射、中文文案
-internal/deepseek/   API 客户端（search/fetch/balance）、重试、错误类型
+internal/cli/        命令、渲染、退出码映射、中文文案（search/fetch/ocr/asr/tts）
+internal/deepseek/   API 客户端（search/fetch/ocr/asr/tts/balance）、重试、错误类型
 internal/config/     配置读写、Key 解析、脱敏
 internal/cache/      磁盘 TTL 缓存
 internal/skill/      内嵌 SKILL.md
 ```
 
-限速：Search 100 QPS，Fetch 25 QPS（账号级、按目标域名），故 `--jobs` 默认 4。
+本地缓存：Search/Fetch 按请求缓存；OCR 按文件内容 hash + `purpose` 缓存，ASR 按文件内容 hash 缓存；TTS 不缓存（产物是音频文件）。
+
+限速：Search 100 QPS，Fetch 25 QPS（账号级、按目标域名），故 `--jobs` 默认 4；OCR 最多同时 15 个识别，ASR/TTS 最多同时 50 个请求。
 
 ## License
 

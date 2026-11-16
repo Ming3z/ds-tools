@@ -58,6 +58,12 @@ type App struct {
 	format   string
 	fields   []string
 	color    bool
+
+	// formatSet and timeoutSet report whether the user (via flag, env, or
+	// config) chose the value. Tool commands use this to apply their own
+	// defaults instead of the generic 30s / pipe-json ones.
+	formatSet  bool
+	timeoutSet bool
 }
 
 // Execute runs the CLI and returns the process exit code.
@@ -91,14 +97,17 @@ func Execute(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 func (a *App) rootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "ds-tools",
-		Short: "面向 Agent 与脚本的 DeepSeek 网页搜索与抓取",
-		Long: "ds-tools 把 DeepSeek 的 Search / Fetch 接口封装成单个静态二进制。\n" +
+		Short: "面向 Agent 与脚本的 DeepSeek 搜索、抓取与多模态工具",
+		Long: "ds-tools 把 DeepSeek 的 Search / Fetch / OCR / ASR / TTS 接口封装成单个静态二进制。\n" +
 			"\n" +
 			"  POST /v1/tools/search   ->  ds-tools search <query>\n" +
 			"  POST /v1/tools/fetch    ->  ds-tools fetch <url>...\n" +
+			"  POST /v1/tools/ocr      ->  ds-tools ocr <file>\n" +
+			"  POST /v1/tools/asr      ->  ds-tools asr <file>\n" +
+			"  POST /v1/tools/tts      ->  ds-tools tts <text>\n" +
 			"\n" +
-			"计费按「成功且有结果」的请求计次，count 与 --content 不影响单价；因此\n" +
-			"search --content 一次请求即可连带正文，fetch 只用于抓已知 URL。\n" +
+			"Search/Fetch 计费按「成功且有结果」的请求计次，count 与 --content 不影响单价；\n" +
+			"OCR 按成功页数、ASR 按音频时长、TTS 按计费字符计费，详见各命令帮助。\n" +
 			"\n" +
 			"退出码：0 成功，1 服务端/请求错误，2 鉴权失败，3 网络错误，4 用法错误。\n" +
 			"Agent 请运行 \"ds-tools skill print\" 获取完整使用契约。",
@@ -125,8 +134,8 @@ func (a *App) rootCmd() *cobra.Command {
 	pf.StringVar(&a.fAPIKey, "api-key", "", "DeepSeek API Key（优先级高于环境变量与配置文件）")
 	pf.StringVar(&a.fBaseURL, "base-url", "", "API 基础地址（默认 "+config.DefaultBaseURL+"）")
 	pf.StringVar(&a.fConfig, "config", "", "配置文件路径")
-	pf.StringVar(&a.fFormat, "format", "", "输出格式：text|json|jsonl|md（终端默认 text，管道默认 json）")
-	pf.StringVar(&a.fFields, "fields", "", "字段投影，逗号分隔，例如 title,url,summary")
+	pf.StringVar(&a.fFormat, "format", "", "输出格式：text|json|jsonl|md（search/fetch 终端 text、管道 json；ocr/asr 默认 text）")
+	pf.StringVar(&a.fFields, "fields", "", "字段投影，逗号分隔（字段集随命令不同，见各命令帮助）")
 	pf.DurationVar(&a.fTimeout, "timeout", config.DefaultTimeout, "单次请求超时时间")
 	pf.IntVar(&a.fRetries, "retries", config.DefaultRetries, "408/429/5xx 的重试次数，0 表示不重试")
 	pf.BoolVar(&a.fNoCache, "no-cache", false, "跳过读取本地响应缓存")
@@ -140,8 +149,8 @@ func (a *App) rootCmd() *cobra.Command {
 	_ = root.RegisterFlagCompletionFunc("format", func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
 		return []string{"text", "json", "jsonl", "md"}, cobra.ShellCompDirectiveNoFileComp
 	})
-	_ = root.RegisterFlagCompletionFunc("fields", func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
-		return canonicalFields, cobra.ShellCompDirectiveNoFileComp
+	_ = root.RegisterFlagCompletionFunc("fields", func(cmd *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
+		return completionFields(cmd), cobra.ShellCompDirectiveNoFileComp
 	})
 	_ = root.RegisterFlagCompletionFunc("error-format", func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
 		return []string{"text", "json"}, cobra.ShellCompDirectiveNoFileComp
@@ -156,6 +165,9 @@ func (a *App) rootCmd() *cobra.Command {
 		a.newConfigCmd(),
 		a.newSearchCmd(),
 		a.newFetchCmd(),
+		a.newOCRCmd(),
+		a.newASRCmd(),
+		a.newTTSCmd(),
 		a.newDoctorCmd(),
 		a.newCacheCmd(),
 		a.newSkillCmd(),
@@ -164,6 +176,20 @@ func (a *App) rootCmd() *cobra.Command {
 
 	localizeTree(root)
 	return root
+}
+
+// completionFields returns the --fields candidates for the executing command.
+func completionFields(cmd *cobra.Command) []string {
+	switch cmd.Name() {
+	case "ocr":
+		return ocrAllFields
+	case "asr":
+		return asrFields
+	case "tts":
+		return nil
+	default:
+		return canonicalFields
+	}
 }
 
 // load resolves configuration and flags. Missing config is not an error.
@@ -220,6 +246,14 @@ func (a *App) load(cmd *cobra.Command) error {
 	a.timeout, a.retries, a.cacheTTL = timeout, retries, ttl
 	if f := cmd.Flags().Lookup("timeout"); f != nil && f.Changed {
 		a.timeout = a.fTimeout
+		a.timeoutSet = true
+	}
+	// A config-file timeout is also an explicit choice: do not override it
+	// with the OCR/ASR/TTS per-command defaults.
+	if cfg.Timeout != "" && !a.timeoutSet {
+		if d, err := time.ParseDuration(cfg.Timeout); err == nil && d > 0 {
+			a.timeoutSet = true
+		}
 	}
 	if f := cmd.Flags().Lookup("retries"); f != nil && f.Changed {
 		a.retries = a.fRetries
@@ -233,8 +267,14 @@ func (a *App) load(cmd *cobra.Command) error {
 
 	// Output format.
 	format := strings.TrimSpace(a.fFormat)
+	if format != "" {
+		a.formatSet = true
+	}
 	if format == "" {
-		format = strings.TrimSpace(os.Getenv(config.EnvFormat))
+		if env := strings.TrimSpace(os.Getenv(config.EnvFormat)); env != "" {
+			format = env
+			a.formatSet = true
+		}
 	}
 	if format == "" {
 		if a.stdoutTTY {
@@ -250,8 +290,13 @@ func (a *App) load(cmd *cobra.Command) error {
 		return usageErrf("--format %q 无效（可选：text、json、jsonl、md）", format)
 	}
 
-	// Field projection.
-	fields, err := parseFields(a.fFields)
+	// Field projection. The global flag is validated against the executing
+	// command's schema; OCR/ASR add their own format-specific checks later.
+	if cmd.Name() == "tts" && strings.TrimSpace(a.fFields) != "" {
+		return usageErrf("tts 不支持 --fields")
+	}
+	allowed, aliases := fieldsForCommand(cmd.Name())
+	fields, err := parseFields(a.fFields, allowed, aliases)
 	if err != nil {
 		return err
 	}

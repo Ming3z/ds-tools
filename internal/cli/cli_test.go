@@ -494,7 +494,7 @@ func TestCanonicalURL(t *testing.T) {
 }
 
 func TestParseFields(t *testing.T) {
-	f, err := parseFields("score,site,url")
+	f, err := parseFields("score,site,url", canonicalFields, fieldAliases)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -502,10 +502,10 @@ func TestParseFields(t *testing.T) {
 	if strings.Join(f, ",") != strings.Join(want, ",") {
 		t.Fatalf("fields = %v", f)
 	}
-	if _, err := parseFields("bogus"); err == nil {
+	if _, err := parseFields("bogus", canonicalFields, fieldAliases); err == nil {
 		t.Fatal("expected an error for an unknown field")
 	}
-	if f, err := parseFields(""); err != nil || f != nil {
+	if f, err := parseFields("", canonicalFields, fieldAliases); err != nil || f != nil {
 		t.Fatalf("empty spec should mean all fields: %v %v", f, err)
 	}
 }
@@ -554,7 +554,7 @@ func TestHelpCommandOrderAndGroups(t *testing.T) {
 	}
 	out := h.out.String()
 
-	order := []string{"fetch", "search", "init", "config", "doctor", "cache", "skill", "help", "version"}
+	order := []string{"fetch", "search", "ocr", "asr", "tts", "init", "config", "doctor", "cache", "skill", "help", "version"}
 	prev := -1
 	for _, name := range order {
 		i := strings.Index(out, "\n  "+name)
@@ -571,7 +571,7 @@ func TestHelpCommandOrderAndGroups(t *testing.T) {
 			t.Fatalf("命令组 %q 前缺少空行：\n%s", name, out)
 		}
 	}
-	for _, name := range []string{"search", "config", "doctor", "skill", "version"} {
+	for _, name := range []string{"search", "ocr", "asr", "tts", "config", "doctor", "skill", "version"} {
 		if strings.Contains(out, "\n\n  "+name) {
 			t.Fatalf("命令 %q 不应另起一组：\n%s", name, out)
 		}

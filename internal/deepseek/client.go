@@ -1,6 +1,5 @@
-// Package deepseek is a thin, dependency-free client for the two DeepSeek web
-// tools endpoints (POST /v1/tools/search and POST /v1/tools/fetch) plus the
-// account balance endpoint.
+// Package deepseek is a thin, dependency-free client for the DeepSeek web tools
+// (Search, Fetch, OCR, ASR, TTS) plus the account balance endpoint.
 package deepseek
 
 import (
