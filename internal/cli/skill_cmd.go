@@ -30,8 +30,8 @@ func (a *App) newSkillCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "skill",
 		Short: "安装或检查内置的 Agent Skill（SKILL.md）",
-		Long: `二进制内嵌了 SKILL.md，它是给 Agent 的权威使用契约：何时用 search 何时用
-fetch、字段投影、退出码语义与计费规则。
+		Long: `二进制内嵌了 SKILL.md，它是给 Agent 的决策契约：何时用 search 何时用
+fetch、字段投影、退出码动作。参数语法以各命令 --help 为准。
 
 安装到 Agent 的 skills 目录后，本地任意 Agent 都能按需加载。`,
 	}

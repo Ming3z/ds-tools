@@ -43,7 +43,9 @@ rich_layout_recognition 对所有文件逐页识别，并保留 <｜ref｜>/<｜
   ds-tools ocr scan.pdf
   ds-tools ocr report.docx --purpose rich_layout_recognition --format md -o report.md
   ds-tools ocr scan.pdf --page 1-3 --format jsonl
-  cat scan.png | ds-tools ocr - --filename scan.png`,
+  cat scan.png | ds-tools ocr - --filename scan.png
+
+` + ocrFieldsUsage(),
 		Args: exactPositionalArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return a.runOCR(cmd.Context(), args[0], o)

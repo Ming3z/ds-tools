@@ -44,7 +44,7 @@ func (a *App) newSearchCmd() *cobra.Command {
 示例：
   ds-tools search "DeepSeek V4 发布" -n 5 --jsonl --fields title,url,summary
   ds-tools search "某事 进展" -n 3 --content --min-score 1.5 --limit 8000 --format md
-  echo "rust async runtime" | ds-tools search -`,
+  echo "rust async runtime" | ds-tools search -` + "\n\n" + fieldsUsage(canonicalFields, fieldAliases),
 		Args:              cobra.ArbitraryArgs,
 		ValidArgsFunction: cobra.NoFileCompletions,
 		RunE: func(cmd *cobra.Command, args []string) error {

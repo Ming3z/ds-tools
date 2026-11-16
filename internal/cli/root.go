@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"dstools/internal/cache"
 	"dstools/internal/config"
@@ -112,8 +113,9 @@ func (a *App) rootCmd() *cobra.Command {
 			"Search/Fetch 计费按「成功且有结果」的请求计次，count 与 --content 不影响单价；\n" +
 			"OCR 按成功页数、ASR 按音频时长、TTS 按计费字符计费，详见各命令帮助。\n" +
 			"\n" +
-			"退出码：0 成功，1 服务端/请求错误，2 鉴权失败，3 网络错误，4 用法错误。\n" +
-			"Agent 请运行 \"ds-tools skill install --all\" 安装完整使用契约。",
+			"退出码：0 成功（含零结果），1 服务端/请求错误（不要重试；402 余额不足，403 抓取被拦截），\n" +
+			"2 鉴权失败（运行 init），3 网络错误（可重试），4 用法错误（未计费）。\n" +
+			"Agent 请运行 \"ds-tools skill install --all\" 安装决策契约。",
 		Version:       Version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -137,7 +139,7 @@ func (a *App) rootCmd() *cobra.Command {
 	pf.StringVar(&a.fAPIKey, "api-key", "", "DeepSeek API Key（优先级高于环境变量与配置文件）")
 	pf.StringVar(&a.fBaseURL, "base-url", "", "API 基础地址（默认 "+config.DefaultBaseURL+"）")
 	pf.StringVar(&a.fConfig, "config", "", "配置文件路径")
-	pf.StringVar(&a.fFormat, "format", "", "输出格式：text|json|jsonl|md（search/fetch 终端 text、管道 json；ocr/asr 默认 text）")
+	pf.StringVar(&a.fFormat, "format", "", "输出格式：text|json|jsonl|md（md 为带标题与来源 URL 的可读文档；search/fetch 终端 text、管道 json；ocr/asr 默认 text）")
 	pf.StringVar(&a.fFields, "fields", "", "字段投影，逗号分隔（字段集随命令不同，见各命令帮助）")
 	pf.DurationVar(&a.fTimeout, "timeout", config.DefaultTimeout, "单次请求超时时间")
 	pf.IntVar(&a.fRetries, "retries", config.DefaultRetries, "408/429/5xx 的重试次数，0 表示不重试")
@@ -434,11 +436,8 @@ func isTTY(w io.Writer) bool {
 	if !ok {
 		return false
 	}
-	info, err := f.Stat()
-	if err != nil {
-		return false
-	}
-	return info.Mode()&os.ModeCharDevice != 0
+	// A char device is not necessarily a terminal: /dev/null is one too.
+	return term.IsTerminal(int(f.Fd()))
 }
 
 func isPipe(r io.Reader) bool {

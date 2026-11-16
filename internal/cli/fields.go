@@ -1,6 +1,9 @@
 package cli
 
-import "strings"
+import (
+	"sort"
+	"strings"
+)
 
 // canonicalFields is the official search response schema, in API order.
 var canonicalFields = []string{
@@ -13,6 +16,10 @@ var fieldAliases = map[string]string{
 	"site":  "site_name",
 	"icon":  "site_icon",
 }
+
+// fetchFields are the only fields a fetch result carries. Exposing the search
+// schema here would accept flags that the renderer silently drops.
+var fetchFields = []string{"url", "title", "content"}
 
 // Fields accepted by the tool commands. OCR uses one set for the document-level
 // JSON response and another for one-page-per-line JSONL.
@@ -30,6 +37,8 @@ var (
 // --fields flag for a command. Search/fetch keep the search schema.
 func fieldsForCommand(name string) ([]string, map[string]string) {
 	switch name {
+	case "fetch":
+		return fetchFields, nil
 	case "ocr":
 		return ocrAllFields, nil
 	case "asr":
@@ -69,6 +78,35 @@ func parseFields(spec string, allowed []string, aliases map[string]string) ([]st
 		return nil, usageErrf("--fields 至少要指定一个字段")
 	}
 	return out, nil
+}
+
+// fieldsUsage renders the --fields contract for one command's help text. It
+// derives from the same lists that validate the flag, so help cannot drift
+// away from what the command actually accepts.
+func fieldsUsage(allowed []string, aliases map[string]string) string {
+	var b strings.Builder
+	b.WriteString("可用 --fields：")
+	b.WriteString(strings.Join(allowed, " "))
+	b.WriteString("。")
+	if len(aliases) > 0 {
+		keys := make([]string, 0, len(aliases))
+		for k := range aliases {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		parts := make([]string, 0, len(keys))
+		for _, k := range keys {
+			parts = append(parts, k+"→"+aliases[k])
+		}
+		b.WriteString("\n别名：" + strings.Join(parts, "、") + "。")
+	}
+	return b.String()
+}
+
+// ocrFieldsUsage documents OCR's two field sets, which depend on --format.
+func ocrFieldsUsage() string {
+	return "可用 --fields（--format json）：" + strings.Join(ocrJSONFields, " ") + "；\n" +
+		"（--format jsonl）：" + strings.Join(ocrPageFields, " ") + "。"
 }
 
 func contains(allowed []string, f string) bool {

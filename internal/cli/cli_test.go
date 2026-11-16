@@ -695,6 +695,21 @@ func TestParseFields(t *testing.T) {
 	}
 }
 
+func TestFetchRejectsFieldsItCannotProject(t *testing.T) {
+	h := newHarness(t)
+	// Fetch only returns url/title/content; search-only fields used to be
+	// accepted and silently dropped.
+	if code := h.run("fetch", "https://example.com", "--fields", "snippet", "--format", "json"); code != ExitUsage {
+		t.Fatalf("search-only field on fetch: exit = %d, stderr=%s", code, h.err.String())
+	}
+	h.out.Reset()
+	h.err.Reset()
+	// text/md rendering never reads --fields, so reject instead of ignoring it.
+	if code := h.run("fetch", "https://example.com", "--fields", "title", "--format", "text"); code != ExitUsage {
+		t.Fatalf("--fields with text format: exit = %d, stderr=%s", code, h.err.String())
+	}
+}
+
 func TestHelpIsChinese(t *testing.T) {
 	h := newHarness(t)
 	if code := h.run("--help"); code != 0 {

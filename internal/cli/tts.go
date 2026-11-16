@@ -45,7 +45,9 @@ stdout，例如 ds-tools tts "..." > speech.wav。指定 -o 文件时，stdout �
 示例：
   ds-tools tts "你好，我是 DeepSeek。" -o hello.wav
   ds-tools tts - < article.md > speech.wav
-  ds-tools tts "..." --voice tide --audio-format pcm -o hello.pcm`,
+  ds-tools tts "..." --voice tide --audio-format pcm -o hello.pcm
+
+tts 不支持 --fields；带 -o 时 stdout 只有一行元信息。`,
 		Args:              cobra.ArbitraryArgs,
 		ValidArgsFunction: cobra.NoFileCompletions,
 		RunE: func(cmd *cobra.Command, args []string) error {

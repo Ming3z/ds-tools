@@ -39,7 +39,11 @@ func (a *App) newFetchCmd() *cobra.Command {
 示例：
   ds-tools fetch https://example.com/post --raw
   ds-tools fetch -f urls.txt --jobs 4 -o pages/          # 每个 URL 一个 .md
-  ds-tools fetch https://long.doc --offset 8000 --limit 8000   # 分段读取长文`,
+  ds-tools fetch https://long.doc --offset 8000 --limit 8000   # 分段读取长文
+
+某个 URL 失败不会中断其余 URL；多 URL 时每行输出一个 JSON 对象。
+
+` + fieldsUsage(fetchFields, nil),
 		Args:              cobra.ArbitraryArgs,
 		ValidArgsFunction: cobra.NoFileCompletions,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -61,6 +65,9 @@ func (a *App) newFetchCmd() *cobra.Command {
 }
 
 func (a *App) runFetch(ctx context.Context, args []string, o fetchOpts) error {
+	if len(a.fields) > 0 && a.format != "json" && a.format != "jsonl" {
+		return usageErrf("--fields 仅支持 --format json 或 jsonl")
+	}
 	if o.jobs < 1 {
 		return usageErrf("--jobs 必须 >= 1")
 	}

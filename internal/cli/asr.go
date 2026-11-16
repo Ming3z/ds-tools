@@ -37,7 +37,9 @@ func (a *App) newASRCmd() *cobra.Command {
 示例：
   ds-tools asr speech.wav
   ds-tools asr speech.ogg --format json
-  cat speech.wav | ds-tools asr - -o speech.txt`,
+  cat speech.wav | ds-tools asr - -o speech.txt
+
+` + fieldsUsage(asrFields, nil),
 		Args: exactPositionalArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return a.runASR(cmd.Context(), args[0], o)

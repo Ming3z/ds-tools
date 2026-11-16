@@ -11,7 +11,9 @@ func (a *App) newCacheCmd() *cobra.Command {
 		Use:   "cache",
 		Short: "查看或清空本地响应缓存",
 		Long: `响应会缓存在配置文件旁的目录中，避免完全相同的请求被重复计费。
-用 --no-cache 跳过读取缓存。`,
+
+search/fetch 按请求缓存，OCR/ASR 按文件内容哈希缓存；TTS 不缓存。
+TTL 由配置项 cache_ttl 控制。用 --no-cache 跳过读取缓存。`,
 	}
 	cmd.AddCommand(
 		a.newCacheClearCmd(),
