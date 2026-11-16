@@ -86,11 +86,14 @@ make test                               # 本机测试
 
 ### 发布 v1.0.0
 
-1. 在仓库 Secrets 添加 `NPM_TOKEN`（npm Automation 或 Granular token，可发布 `ds-tools*`）。
-2. 打 tag 并推送：`git tag v1.0.0 && git push origin v1.0.0`。
-3. `.github/workflows/release.yml` 会构建 5 平台产物、创建 GitHub Release，并按“平台包 → 主包”顺序发布 5 个 npm 包（公开仓库自动带 provenance）。
+1. npm 账号开启 2FA，创建 Granular Access Token：`Read and write (publish and stage)`、All Packages、勾选 Bypass 2FA、有效期 90 天。
+2. 写入仓库 Secret：`gh secret set NPM_TOKEN --repo Ming3z/ds-tools`（交互粘贴，勿写进命令行）。
+3. 打 tag 并推送：`git tag v1.0.0 && git push origin v1.0.0`。
+4. `.github/workflows/release.yml` 会构建 5 平台产物、创建 GitHub Release，并按“平台包 → 主包”顺序发布 5 个 npm 包（公开仓库自动带 provenance）。
 
 npm 版本不可覆盖：发布失败需修好后升版本号重发；`dist/npm/` 与 `dist/release/` 均不入库。
+
+发布成功后为 5 个包配置 Trusted Publishing（GitHub Actions、`release.yml`），随后撤销 token：2FA-bypass token 的直接发布能力将在 2027-01 左右取消，OIDC 发布是长期方案。
 
 ## License
 
