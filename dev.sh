@@ -470,8 +470,8 @@ run_install() {
 
     if [[ "$INSTALL_SKILL" -eq 1 ]]; then
         printf '==> 安装 agent skill\n'
-        if skill_output="$("$INSTALL_PATH" skill install --force --format text 2>&1)"; then
-            installed_skill="$(printf '%s\n' "$skill_output" | sed -n 's/^installed //p')"
+        if skill_output="$("$INSTALL_PATH" skill install --claude --format json 2>&1)"; then
+            installed_skill="$(printf '%s\n' "$skill_output" | sed -n 's/.*"path":"\([^"]*\)".*/\1/p')"
         else
             printf '提示：跳过 skill 安装（%s）\n' "$skill_output"
         fi

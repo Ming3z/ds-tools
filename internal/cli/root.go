@@ -113,7 +113,7 @@ func (a *App) rootCmd() *cobra.Command {
 			"OCR 按成功页数、ASR 按音频时长、TTS 按计费字符计费，详见各命令帮助。\n" +
 			"\n" +
 			"退出码：0 成功，1 服务端/请求错误，2 鉴权失败，3 网络错误，4 用法错误。\n" +
-			"Agent 请运行 \"ds-tools skill print\" 获取完整使用契约。",
+			"Agent 请运行 \"ds-tools skill install --all\" 安装完整使用契约。",
 		Version:       Version,
 		SilenceUsage:  true,
 		SilenceErrors: true,

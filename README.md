@@ -48,8 +48,8 @@ ds-tools config unset timeout     # 移除配置项
 **Agent 接入**
 
 ```bash
-ds-tools skill print      # 查看完整使用契约
-ds-tools skill install    # 安装到 Agent 的 skills 目录
+ds-tools skill install --all   # 安装到全部三个 Agent skills 目录
+ds-tools skill status          # 检查安装状态，以及是否与当前版本一致
 ```
 
 不提供 MCP：CLI + Skill 覆盖终端与能执行 shell 的 Agent。

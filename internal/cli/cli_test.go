@@ -12,6 +12,9 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"dstools/internal/config"
+	"dstools/internal/skill"
 )
 
 // harness runs the CLI with an isolated config dir and captured streams.
@@ -32,6 +35,7 @@ func newHarness(t *testing.T) *harness {
 	t.Setenv("DEEPSEEK_API_KEY", "sk-test-key")
 	t.Setenv("DEEPSEEK_BASE_URL", "")
 	t.Setenv("DS_TOOLS_FORMAT", "")
+	t.Setenv("DS_TOOLS_SKILL_DIR", "")
 	t.Setenv("NO_COLOR", "1")
 
 	h := &harness{t: t, dir: dir}
@@ -457,24 +461,150 @@ func TestVersionAndSkillEmbedded(t *testing.T) {
 		t.Fatalf("version output = %s", h.out.String())
 	}
 
-	h.out.Reset()
-	if code := h.run("skill", "print"); code != 0 {
-		t.Fatalf("skill print exit = %d", code)
-	}
-	if !strings.Contains(h.out.String(), "exit codes") && !strings.Contains(h.out.String(), "Exit codes") {
-		t.Fatalf("skill content looks wrong: %s", h.out.String()[:200])
-	}
-
 	dir := t.TempDir()
+	t.Setenv(config.EnvSkill, dir)
 	h.out.Reset()
-	if code := h.run("skill", "install", "--dir", dir); code != 0 {
+	if code := h.run("skill", "install", "--format", "text"); code != 0 {
 		t.Fatalf("skill install exit = %d, stderr=%s", code, h.err.String())
 	}
 	if _, err := os.Stat(filepath.Join(dir, "ds-tools", "SKILL.md")); err != nil {
 		t.Fatalf("skill not installed: %v", err)
 	}
-	if code := h.run("skill", "install", "--dir", dir); code != ExitUsage {
-		t.Fatalf("re-install without --force should fail with 4, got %d", code)
+	if !strings.Contains(h.out.String(), "已安装") {
+		t.Fatalf("first install should report 已安装: %s", h.out.String())
+	}
+
+	h.out.Reset()
+	if code := h.run("skill", "install", "--format", "text"); code != 0 {
+		t.Fatalf("re-install exit = %d, stderr=%s", code, h.err.String())
+	}
+	if !strings.Contains(h.out.String(), "已是最新") {
+		t.Fatalf("re-install should be idempotent: %s", h.out.String())
+	}
+}
+
+func TestSkillInstallRequiresExplicitTarget(t *testing.T) {
+	h := newHarness(t)
+	t.Setenv("HOME", h.dir)
+	t.Setenv(config.EnvSkill, "")
+
+	if code := h.run("skill", "install"); code != ExitUsage {
+		t.Fatalf("install without target exit = %d, want 4", code)
+	}
+	if !strings.Contains(h.err.String(), "--claude") {
+		t.Fatalf("error should mention the harness flags: %s", h.err.String())
+	}
+
+	if code := h.run("skill", "install", "--all", "--claude"); code != ExitUsage {
+		t.Fatalf("--all with --claude exit = %d, want 4", code)
+	}
+}
+
+func TestSkillInstallAllCreatesThreeDirs(t *testing.T) {
+	h := newHarness(t)
+	t.Setenv("HOME", h.dir)
+
+	if code := h.run("skill", "install", "--all", "--format", "json"); code != 0 {
+		t.Fatalf("install --all exit = %d, stderr=%s", code, h.err.String())
+	}
+	var got installOutput
+	if err := json.Unmarshal(h.out.Bytes(), &got); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, h.out.String())
+	}
+	if len(got.Results) != 3 {
+		t.Fatalf("results = %v, want 3 targets", got.Results)
+	}
+	for _, result := range got.Results {
+		if result.Action != "installed" {
+			t.Fatalf("action = %q, want installed", result.Action)
+		}
+		if _, err := os.Stat(result.Path); err != nil {
+			t.Fatalf("missing %s: %v", result.Path, err)
+		}
+	}
+
+	h.out.Reset()
+	if code := h.run("skill", "install", "--all", "--format", "json"); code != 0 {
+		t.Fatalf("re-install exit = %d, stderr=%s", code, h.err.String())
+	}
+	got = installOutput{}
+	if err := json.Unmarshal(h.out.Bytes(), &got); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	for _, result := range got.Results {
+		if result.Action != "unchanged" {
+			t.Fatalf("action = %q, want unchanged", result.Action)
+		}
+	}
+}
+
+func TestSkillInstallMultipleHarnessFlags(t *testing.T) {
+	h := newHarness(t)
+	t.Setenv("HOME", h.dir)
+
+	if code := h.run("skill", "install", "--claude", "--agents", "--format", "json"); code != 0 {
+		t.Fatalf("install exit = %d, stderr=%s", code, h.err.String())
+	}
+	var got installOutput
+	if err := json.Unmarshal(h.out.Bytes(), &got); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, h.out.String())
+	}
+	want := []string{
+		filepath.Join(h.dir, ".claude", "skills", "ds-tools", "SKILL.md"),
+		filepath.Join(h.dir, ".agents", "skills", "ds-tools", "SKILL.md"),
+	}
+	if len(got.Results) != len(want) {
+		t.Fatalf("results = %v, want %v", got.Results, want)
+	}
+	for i, result := range got.Results {
+		if result.Path != want[i] {
+			t.Fatalf("results[%d] = %q, want %q", i, result.Path, want[i])
+		}
+	}
+	if _, err := os.Stat(filepath.Join(h.dir, ".pi", "agent", "skills", "ds-tools", "SKILL.md")); !os.IsNotExist(err) {
+		t.Fatalf("--claude --agents must not touch .pi: %v", err)
+	}
+}
+
+func TestSkillStatusReportsInstallState(t *testing.T) {
+	h := newHarness(t)
+	t.Setenv("HOME", h.dir)
+	write := func(dir, content string) {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(filepath.Join(h.dir, ".claude", "skills", "ds-tools"), skill.Markdown)
+	write(filepath.Join(h.dir, ".agents", "skills", "ds-tools"), "stale skill\n")
+
+	if code := h.run("skill", "status", "--format", "json"); code != 0 {
+		t.Fatalf("status exit = %d, stderr=%s", code, h.err.String())
+	}
+	var got skillStatusOutput
+	if err := json.Unmarshal(h.out.Bytes(), &got); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, h.out.String())
+	}
+	states := map[string]string{}
+	for _, target := range got.Targets {
+		states[target.Agent] = target.State
+	}
+	want := map[string]string{"claude": "ok", "pi": "missing", "agents": "changed"}
+	for agent, state := range want {
+		if states[agent] != state {
+			t.Fatalf("%s state = %q, want %q (all: %v)", agent, states[agent], state, states)
+		}
+	}
+
+	if code := h.run("skill", "status", "--format", "text"); code != 0 {
+		t.Fatalf("status text exit = %d", code)
+	}
+	for _, want := range []string{"ok", "missing", "changed", "install --all"} {
+		if !strings.Contains(h.out.String(), want) {
+			t.Fatalf("status text missing %q:\n%s", want, h.out.String())
+		}
 	}
 }
 
