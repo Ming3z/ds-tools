@@ -684,7 +684,7 @@ func TestHelpCommandOrderAndGroups(t *testing.T) {
 	}
 	out := h.out.String()
 
-	order := []string{"fetch", "search", "ocr", "asr", "tts", "init", "config", "doctor", "cache", "skill", "help", "version"}
+	order := []string{"fetch", "search", "ocr", "asr", "tts", "init", "config", "skill", "cache", "doctor", "help", "version"}
 	prev := -1
 	for _, name := range order {
 		i := strings.Index(out, "\n  "+name)
@@ -701,7 +701,7 @@ func TestHelpCommandOrderAndGroups(t *testing.T) {
 			t.Fatalf("命令组 %q 前缺少空行：\n%s", name, out)
 		}
 	}
-	for _, name := range []string{"search", "ocr", "asr", "tts", "config", "doctor", "skill", "version"} {
+	for _, name := range []string{"search", "ocr", "asr", "tts", "config", "skill", "doctor", "version"} {
 		if strings.Contains(out, "\n\n  "+name) {
 			t.Fatalf("命令 %q 不应另起一组：\n%s", name, out)
 		}
