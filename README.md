@@ -30,7 +30,7 @@ ds-tools tts "你好，我是 DeepSeek。" -o hello.wav
 
 ```bash
 ./dev.sh all v0.1.0     # 构建并安装二进制 + Skill
-ds-tools init           # 写入 API Key；非交互用 --api-key-stdin < key.txt
+ds-tools init           # 交互向导；非交互用 --api-key-stdin < key.txt
 ds-tools doctor --probe # 校验 Key 与余额
 ```
 

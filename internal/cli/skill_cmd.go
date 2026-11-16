@@ -153,11 +153,22 @@ func (a *App) printInstallResult(results []installResult) error {
 		}
 		return nil
 	default:
-		labels := map[string]string{"installed": "已安装", "updated": "已更新", "unchanged": "已是最新"}
 		for _, result := range results {
-			fmt.Fprintf(a.stdout, "%s %s\n", labels[result.Action], result.Path)
+			fmt.Fprintf(a.stdout, "%s %s\n", installActionLabel(result.Action), result.Path)
 		}
 		return nil
+	}
+}
+
+// installActionLabel renders an install action for human-readable output.
+func installActionLabel(action string) string {
+	switch action {
+	case "installed":
+		return "已安装"
+	case "updated":
+		return "已更新"
+	default:
+		return "已是最新"
 	}
 }
 

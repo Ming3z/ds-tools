@@ -414,6 +414,61 @@ func TestInitFromStdin(t *testing.T) {
 	}
 }
 
+func TestParseSkillSelection(t *testing.T) {
+	cases := []struct {
+		in      string
+		n       int
+		want    []int
+		wantErr bool
+	}{
+		{"", 3, nil, false},
+		{"all", 3, []int{0, 1, 2}, false},
+		{"1,3", 3, []int{0, 2}, false},
+		{"2 1", 3, []int{0, 1}, false},
+		{"1，3", 3, []int{0, 2}, false},
+		{"3,3,1", 3, []int{0, 2}, false},
+		{"4", 3, nil, true},
+		{"0", 3, nil, true},
+		{"x", 3, nil, true},
+	}
+	for _, c := range cases {
+		got, err := parseSkillSelection(c.in, c.n)
+		if c.wantErr {
+			if err == nil {
+				t.Fatalf("parseSkillSelection(%q) expected error", c.in)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("parseSkillSelection(%q): %v", c.in, err)
+		}
+		if len(got) != len(c.want) {
+			t.Fatalf("parseSkillSelection(%q) = %v, want %v", c.in, got, c.want)
+		}
+		for i := range c.want {
+			if got[i] != c.want[i] {
+				t.Fatalf("parseSkillSelection(%q) = %v, want %v", c.in, got, c.want)
+			}
+		}
+	}
+}
+
+func TestResolvedBaseURL(t *testing.T) {
+	t.Setenv("DEEPSEEK_BASE_URL", "")
+	cfg := &config.Config{}
+	if v, src := resolvedBaseURL(cfg); v != config.DefaultBaseURL || src != "default" {
+		t.Fatalf("empty config = %q/%q", v, src)
+	}
+	cfg.BaseURL = "https://config.example"
+	if v, src := resolvedBaseURL(cfg); v != cfg.BaseURL || src != "config" {
+		t.Fatalf("config base = %q/%q", v, src)
+	}
+	t.Setenv("DEEPSEEK_BASE_URL", "https://env.example/")
+	if v, src := resolvedBaseURL(cfg); v != "https://env.example" || src != "env" {
+		t.Fatalf("env base = %q/%q", v, src)
+	}
+}
+
 func TestInitRefusesOverwriteWithoutForce(t *testing.T) {
 	h := newHarness(t)
 	t.Setenv("DEEPSEEK_API_KEY", "")
