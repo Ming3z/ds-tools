@@ -54,20 +54,13 @@ jobs:
           --title "$GITHUB_REF_NAME"
           --generate-notes
       - name: Publish npm packages
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          REPO_PRIVATE: ${{ github.event.repository.private }}
         run: |
           set -euo pipefail
-          publish_args=(--access public)
-          if [[ "$REPO_PRIVATE" == "false" ]]; then
-            publish_args+=(--provenance)
-          fi
           for package in \
             dist/npm/ds-tools-darwin-arm64 \
             dist/npm/ds-tools-darwin-x64 \
             dist/npm/ds-tools-linux-arm64 \
             dist/npm/ds-tools-linux-x64; do
-            npm publish "$package" "${publish_args[@]}"
+            npm publish "$package" --access public --provenance
           done
-          npm publish dist/npm/ds-tools "${publish_args[@]}"
+          npm publish dist/npm/ds-tools --access public --provenance
