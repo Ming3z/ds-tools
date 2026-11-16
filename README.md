@@ -1,5 +1,3 @@
-# ds-tools
-
 将 [DeepSeek 的工具 API](https://api-docs.deepseek.com/zh-cn/guides/search/) 封装为 CLI，并内置供 Agent 使用的 [`SKILL.md`](internal/skill/SKILL.md)。
 
 ## 示例
