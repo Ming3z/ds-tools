@@ -42,7 +42,7 @@ func (a *App) newSearchCmd() *cobra.Command {
   lang:zh,en               after:2025-01-01        before:2026
 
 示例：
-  ds-tools search "DeepSeek V4 发布" -n 5 --jsonl --fields title,url,summary
+  ds-tools search "DeepSeek V4 发布" -n 5 --format jsonl --fields title,url,summary
   ds-tools search "某事 进展" -n 3 --content --min-score 1.5 --limit 8000 --format md
   echo "rust async runtime" | ds-tools search -` + "\n\n" + fieldsUsage(canonicalFields, fieldAliases),
 		Args:              cobra.ArbitraryArgs,
@@ -146,7 +146,7 @@ func filterResults(in []deepseek.SearchResult, o searchOpts) []deepseek.SearchRe
 		if o.minScore > 0 && r.RerankScore < o.minScore {
 			continue
 		}
-		if o.minAuthority > 0 && r.Authority < o.minAuthority {
+		if o.minAuthority >= 0 && r.Authority < o.minAuthority {
 			continue
 		}
 		if excluded(r.URL, o.excludeSites) {

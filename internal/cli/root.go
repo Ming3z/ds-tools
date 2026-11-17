@@ -63,9 +63,11 @@ type App struct {
 	fields      []string
 	color       bool
 
-	// formatSet and timeoutSet report whether the user (via flag, env, or
-	// config) chose the value. Tool commands use this to apply their own
-	// defaults instead of the generic 30s / pipe-json ones.
+	// formatSet reports whether the user chose the output format (flag or env);
+	// timeoutSet reports whether --timeout was given explicitly. Tool commands
+	// use them to apply their own defaults instead of the generic 30s /
+	// pipe-json ones. A config-file timeout is not an explicit tool choice:
+	// it may raise a tool's own default but never lowers it.
 	formatSet  bool
 	timeoutSet bool
 }
@@ -113,7 +115,8 @@ func (a *App) rootCmd() *cobra.Command {
 			"Search/Fetch 计费按「成功且有结果」的请求计次，count 与 --content 不影响单价；\n" +
 			"OCR 按成功页数、ASR 按音频时长、TTS 按计费字符计费，详见各命令帮助。\n" +
 			"\n" +
-			"退出码：0 成功（含零结果），1 服务端/请求错误（不要重试；402 余额不足，403 抓取被拦截），\n" +
+			"退出码：0 成功（含零结果），1 服务端/请求错误（不要重试；402 余额不足，403 抓取被拦截；\n" +
+			"ocr/asr 上传完成后断连也在此列，避免重复计费），\n" +
 			"2 鉴权失败（运行 init），3 网络错误（可重试），4 用法错误（未计费）。\n" +
 			"Agent 请运行 \"ds-tools skill install --all\" 安装决策契约。",
 		Version:       Version,
@@ -254,12 +257,13 @@ func (a *App) load(cmd *cobra.Command) error {
 		a.timeout = a.fTimeout
 		a.timeoutSrc = "flag"
 		a.timeoutSet = true
-	} else if cfg.Timeout != "" && !a.timeoutSet {
-		// A config-file timeout is also an explicit choice: do not override it
-		// with the OCR/ASR/TTS per-command defaults.
+	} else if cfg.Timeout != "" {
+		// A config-file timeout is reported as the source, but it is not an
+		// explicit tool choice: toolTimeout() may only raise a command's own
+		// default with it. Keeping timeoutSet false lets 'config set timeout 1s'
+		// from shrinking OCR/ASR/TTS and triggering re-uploads.
 		if d, err := time.ParseDuration(cfg.Timeout); err == nil && d > 0 {
 			a.timeoutSrc = "config"
-			a.timeoutSet = true
 		}
 	}
 	if cfg.Retries != nil {
@@ -328,6 +332,20 @@ func (a *App) load(cmd *cobra.Command) error {
 		a.color = !a.fNoColor && a.stdoutTTY && os.Getenv(config.EnvNoColor) == ""
 	}
 	return nil
+}
+
+// toolTimeout resolves the timeout for a long-running tool command. An explicit
+// --timeout always wins. Otherwise the resolved config-or-default timeout is a
+// floor: it may raise the command's own default (OCR/ASR/TTS never shrink below
+// it), so a small config timeout cannot cut a long upload short.
+func (a *App) toolTimeout(def time.Duration) time.Duration {
+	if a.timeoutSet {
+		return a.timeout
+	}
+	if a.timeout > def {
+		return a.timeout
+	}
+	return def
 }
 
 // client builds an API client, failing with an auth exit code when no key exists.

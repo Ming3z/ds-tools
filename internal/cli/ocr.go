@@ -31,12 +31,15 @@ func (a *App) newOCRCmd() *cobra.Command {
 文件以 multipart 上传，服务端按页返回。未显式指定 --format 时默认 text，
 便于直接重定向成 .txt；需要结构化结果时显式使用 --format json / jsonl。
 
---purpose text_recognition（默认）对不含图片的 Word/PPT 直接提取文字；
-rich_layout_recognition 对所有文件逐页识别，并保留 <｜ref｜>/<｜box｜> 标记。
+--purpose text_recognition（默认）与 rich_layout_recognition 对 PDF 和图片都逐页识别；
+区别只在不含图片的 Word/PPT：text_recognition 直接提取文字（不带标记），
+rich_layout_recognition 仍逐页识别。逐页识别的结果保留 <｜ref｜>/<｜box｜> 等标记与
+坐标（[[x1,y1,x2,y2]]，按页面宽高归一化到 0–1000），text/md 输出原样保留。
 --page 在本地按 1-based 页码过滤，支持 1-3,5、5-、-3。
 
 限制：文件 <= 100 MiB、<= 1000 页；上传与识别总时长由服务端限制为 180 秒。
-未显式指定 --timeout 时默认 210 秒。
+--timeout 未指定时取配置值与 210 秒的较大者（配置不会把它压低）。
+上传完成后的断连、HTTP 504 与识别超时不会自动重试（服务端可能仍在识别并计费）。
 计费：每 1000 个成功识别的页面 1.5 元；失败或超时不计费。
 
 示例：
@@ -64,12 +67,10 @@ rich_layout_recognition 对所有文件逐页识别，并保留 <｜ref｜>/<｜
 }
 
 func (a *App) runOCR(ctx context.Context, path string, o ocrOpts) error {
-	if !a.timeoutSet {
-		a.timeout = 210 * time.Second
-	}
 	if !a.formatSet {
 		a.format = "text"
 	}
+	a.timeout = a.toolTimeout(210 * time.Second)
 	switch o.purpose {
 	case "text_recognition", "rich_layout_recognition":
 	default:

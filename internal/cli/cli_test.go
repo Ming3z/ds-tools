@@ -169,6 +169,23 @@ func TestSearchFilters(t *testing.T) {
 	}
 }
 
+func TestSearchMinAuthorityZeroDropsUnknown(t *testing.T) {
+	h := newHarness(t)
+	h.handle = func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"results":[
+			{"rerank_score":1,"title":"unknown","url":"https://example.com/unknown","authority":-1},
+			{"rerank_score":1,"title":"zero","url":"https://example.com/zero","authority":0}
+		]}`)
+	}
+	if code := h.run("search", "x", "--format", "jsonl", "--min-authority", "0"); code != 0 {
+		t.Fatalf("exit = %d, stderr=%s", code, h.err.String())
+	}
+	lines := strings.Split(strings.TrimSpace(h.out.String()), "\n")
+	if len(lines) != 1 || !strings.Contains(lines[0], "https://example.com/zero") {
+		t.Fatalf("expected only the authority-0 result, got %q", h.out.String())
+	}
+}
+
 func TestAuthAndServerExitCodes(t *testing.T) {
 	cases := []struct {
 		status int
@@ -274,27 +291,53 @@ func TestDryRunPrintsWithoutSending(t *testing.T) {
 
 func TestFetchMultipleDedupeAndPacing(t *testing.T) {
 	h := newHarness(t)
+	var sent []string
 	h.handle = func(w http.ResponseWriter, r *http.Request) {
 		var req struct{ URL string }
 		_ = json.NewDecoder(r.Body).Decode(&req)
-		if strings.Contains(req.URL, "bad") {
-			w.WriteHeader(404)
-			fmt.Fprint(w, `{"error":{"message":"no markdown content","type":"invalid_request_error","code":"not_found"}}`)
-			return
-		}
+		sent = append(sent, req.URL)
 		fmt.Fprintf(w, `{"title":"T %s","content":"# %s"}`, req.URL, req.URL)
 	}
-	code := h.run("fetch", "https://ex.com/a", "https://ex.com/a#frag", "https://ex.com/a?utm_source=x", "--format", "json")
+	code := h.run("fetch", "https://ex.com/a?utm_source=x", "https://ex.com/a#frag", "https://ex.com/a", "--format", "json")
 	if code != 0 {
 		t.Fatalf("exit = %d, stderr=%s", code, h.err.String())
 	}
-	// three inputs canonicalise to one URL -> one request
+	// three inputs canonicalise to one URL -> one request, sending the first
+	// occurrence exactly as it was given.
 	if h.hits != 1 {
 		t.Fatalf("expected 1 request after de-duplication, got %d", h.hits)
 	}
+	if len(sent) != 1 || sent[0] != "https://ex.com/a?utm_source=x" {
+		t.Fatalf("sent URLs = %q", sent)
+	}
 	v := h.jsonOut(t)
-	if v["url"] != "https://ex.com/a" {
+	if v["url"] != "https://ex.com/a?utm_source=x" {
 		t.Fatalf("url = %v", v["url"])
+	}
+}
+
+func TestFetchSendsRequestedURLVerbatim(t *testing.T) {
+	h := newHarness(t)
+	const want = "https://ex.com/s?ref=main&z=1&a=2"
+	var got string
+	h.handle = func(w http.ResponseWriter, r *http.Request) {
+		var req struct{ URL string }
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		got = req.URL
+		fmt.Fprint(w, `{"title":"t","content":"c"}`)
+	}
+	if code := h.run("fetch", want, "--format", "json"); code != 0 {
+		t.Fatalf("exit = %d, stderr=%s", code, h.err.String())
+	}
+	if got != want {
+		t.Fatalf("sent url = %q, want %q", got, want)
+	}
+	v := h.jsonOut(t)
+	if v["url"] != want {
+		t.Fatalf("url = %v, want %q", v["url"], want)
+	}
+	if _, ok := v["input_url"]; ok {
+		t.Fatalf("removed input_url field is still present: %v", v)
 	}
 }
 
@@ -775,7 +818,7 @@ func TestCanonicalURL(t *testing.T) {
 		"https://ex.com/a?utm_source=t&b=2": "https://ex.com/a?b=2",
 		"https://ex.com/":                   "https://ex.com",
 		"https://ex.com/a?fbclid=1&gclid=2": "https://ex.com/a",
-		"http://ex.com/x?ref=hn&keep=1":     "http://ex.com/x?keep=1",
+		"http://ex.com/x?ref=hn&keep=1":     "http://ex.com/x?keep=1&ref=hn",
 	}
 	for in, want := range cases {
 		if got := canonicalURL(in); got != want {

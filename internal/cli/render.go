@@ -311,11 +311,11 @@ func indent(s, prefix string) string {
 
 // fetchResult is one URL outcome of a fetch run.
 type fetchResult struct {
-	InputURL string
-	URL      string
-	Title    string
-	Content  string
-	Err      string
+	// URL is the requested URL, exactly as it was sent to the API.
+	URL     string
+	Title   string
+	Content string
+	Err     string
 	// code is the exit code this failure maps to (0 when there is no error).
 	code int
 }
@@ -336,9 +336,6 @@ func (a *App) fetchObj(r fetchResult) obj {
 	}
 	if hasField(fields, "content") {
 		o = append(o, kv{"content", r.Content})
-	}
-	if r.InputURL != "" && r.InputURL != r.URL {
-		o = append(o, kv{"input_url", r.InputURL})
 	}
 	return o
 }
@@ -423,9 +420,6 @@ func (a *App) renderFetch(w io.Writer, results []fetchResult) error {
 				}
 			}
 			head := r.URL
-			if r.InputURL != "" && r.InputURL != r.URL {
-				head = r.InputURL + " -> " + r.URL
-			}
 			if _, err := fmt.Fprintf(w, "==> %s\n", a.dim(head)); err != nil {
 				return err
 			}
@@ -448,7 +442,8 @@ func (a *App) renderFetch(w io.Writer, results []fetchResult) error {
 	}
 }
 
-// canonicalURL normalises a URL for de-duplication.
+// canonicalURL normalises a URL for de-duplication and cache keys only; the
+// API always receives the URL as the user wrote it.
 func canonicalURL(raw string) string {
 	u, err := url.Parse(raw)
 	if err != nil {
@@ -460,7 +455,7 @@ func canonicalURL(raw string) string {
 	q := u.Query()
 	for k := range q {
 		lk := strings.ToLower(k)
-		if strings.HasPrefix(lk, "utm_") || lk == "gclid" || lk == "fbclid" || lk == "spm" || lk == "ref" || lk == "ref_src" {
+		if strings.HasPrefix(lk, "utm_") || lk == "gclid" || lk == "fbclid" || lk == "spm" || lk == "ref_src" {
 			q.Del(k)
 		}
 	}

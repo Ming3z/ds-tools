@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"dstools/internal/deepseek"
 )
@@ -131,6 +132,30 @@ func TestOCRDefaultTextJSONLAndCache(t *testing.T) {
 	}
 	if h.hits != 2 {
 		t.Fatalf("--no-cache hits = %d", h.hits)
+	}
+}
+
+func TestOCRConfigTimeoutCannotShrinkToolLimit(t *testing.T) {
+	h := newHarness(t)
+	cfgPath := filepath.Join(h.dir, "config.json")
+	if err := os.WriteFile(cfgPath, []byte(`{"version":1,"timeout":"1s"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h.handle = func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(1500 * time.Millisecond)
+		fmt.Fprint(w, ocrJSON("late"))
+	}
+	path := writeTemp(t, "doc.pdf", []byte("pdf"))
+
+	start := time.Now()
+	if code := h.run("ocr", path); code != 0 {
+		t.Fatalf("exit = %d, stderr=%s", code, h.err.String())
+	}
+	if elapsed := time.Since(start); elapsed >= 2*time.Second {
+		t.Fatalf("ocr took %s; a config timeout must not lower the tool default", elapsed)
+	}
+	if got := h.out.String(); got != "late\n" {
+		t.Fatalf("text = %q", got)
 	}
 }
 

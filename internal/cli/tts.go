@@ -40,7 +40,7 @@ stdout，例如 ds-tools tts "..." > speech.wav。指定 -o 文件时，stdout �
 
 限制：文本最多 10,000 个计费字符（汉字算 2，其他算 1），请求体最多 64 KiB；
 单次请求最多返回 30 分钟音频。计费：每 10,000 字符 3 元（限时 5 折 1.5 元）。
-未显式指定 --timeout 时默认 600 秒。
+--timeout 表示等待响应头与音频流读空闲的超时，不限制总时长（未指定时 120 秒）。
 
 示例：
   ds-tools tts "你好，我是 DeepSeek。" -o hello.wav
@@ -70,9 +70,7 @@ tts 不支持 --fields；带 -o 时 stdout 只有一行元信息。`,
 }
 
 func (a *App) runTTS(ctx context.Context, args []string, o ttsOpts) error {
-	if !a.timeoutSet {
-		a.timeout = 600 * time.Second
-	}
+	a.timeout = a.toolTimeout(120 * time.Second)
 	text, err := a.readInput(args, "文本")
 	if err != nil {
 		return err

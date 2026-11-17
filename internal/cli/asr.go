@@ -28,11 +28,12 @@ func (a *App) newASRCmd() *cobra.Command {
 		Long: `把音频文件转写为文字（POST /v1/tools/asr）。
 
 支持 16 位 PCM WAV 或 Ogg Opus，最大 8 MiB、最长 120 秒；语种由服务端自动
-识别。CLI 会在上传前检查 WAV 头/时长或 Ogg Opus 魔数，避免无效请求计费。
+识别。双声道音频只识别左声道。CLI 会在上传前检查 WAV 头/时长或 Ogg Opus
+魔数，避免无效请求计费。
 未显式指定 --format 时默认 text，便于直接重定向成 .txt。
 
 计费：按音频时长，每小时 0.78 元（限时 5 折 0.39 元），不足 1 秒按 1 秒计。
-未显式指定 --timeout 时默认 300 秒。
+--timeout 未指定时取配置值与 300 秒的较大者（配置不会把它压低）。
 
 示例：
   ds-tools asr speech.wav
@@ -53,12 +54,10 @@ func (a *App) newASRCmd() *cobra.Command {
 }
 
 func (a *App) runASR(ctx context.Context, path string, o asrOpts) error {
-	if !a.timeoutSet {
-		a.timeout = 300 * time.Second
-	}
 	if !a.formatSet {
 		a.format = "text"
 	}
+	a.timeout = a.toolTimeout(300 * time.Second)
 	if a.format == "text" || a.format == "md" {
 		if len(a.fields) > 0 {
 			return usageErrf("--fields 仅支持 --format json 或 jsonl")

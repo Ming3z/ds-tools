@@ -33,8 +33,8 @@ func (a *App) newFetchCmd() *cobra.Command {
 		Short: "调用 DeepSeek Fetch 接口把网页抓成 Markdown",
 		Long: `抓取一个或多个 URL 并返回其 Markdown 正文（POST /v1/tools/fetch）。
 
-每个 URL 都是一次独立计费的请求，且该接口对账号和每个目标域名都限制 25 QPS，
-所以 --jobs 不要开太大（默认 4）。
+每个 URL 是一次独立计费的请求。账号级限速 25 QPS，目标域名另有 QPS 限制
+（超限返回 429），所以 --jobs 不要开太大（默认 4）。
 
 示例：
   ds-tools fetch https://example.com/post --raw
@@ -93,13 +93,14 @@ func (a *App) runFetch(ctx context.Context, args []string, o fetchOpts) error {
 	for _, raw := range rawURLs {
 		if err := validateURL(raw); err != nil {
 			invalid = append(invalid, fetchResult{
-				InputURL: raw,
-				URL:      raw,
-				Err:      err.Error(),
-				code:     codeOf(err),
+				URL:  raw,
+				Err:  err.Error(),
+				code: codeOf(err),
 			})
 			continue
 		}
+		// canonicalURL is only a de-duplication / cache key; the API request
+		// carries the URL exactly as the user gave it (whitespace already trimmed).
 		canon := canonicalURL(raw)
 		if o.dedupe && seen[canon] {
 			continue
@@ -124,7 +125,7 @@ func (a *App) runFetch(ctx context.Context, args []string, o fetchOpts) error {
 			return usageErrf("没有合法的 URL 可抓取")
 		}
 		for _, t := range targets {
-			if err := a.printDryRun("POST", deepseek.PathFetch, &deepseek.FetchRequest{URL: t.canonical}); err != nil {
+			if err := a.printDryRun("POST", deepseek.PathFetch, &deepseek.FetchRequest{URL: t.input}); err != nil {
 				return err
 			}
 		}
@@ -148,14 +149,14 @@ func (a *App) runFetch(ctx context.Context, args []string, o fetchOpts) error {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			res := fetchResult{InputURL: t.input, URL: t.canonical}
+			res := fetchResult{URL: t.input}
 			key := "fetch|" + t.canonical
 			page := &deepseek.FetchResponse{}
 			if a.cacheGet(key, page) {
-				a.verbosef("缓存命中：%s", t.canonical)
+				a.verbosef("缓存命中：%s", t.input)
 			} else {
-				a.verbosef("POST %s%s url=%s", a.baseURL, deepseek.PathFetch, t.canonical)
-				got, fErr := client.Fetch(ctx, &deepseek.FetchRequest{URL: t.canonical})
+				a.verbosef("POST %s%s url=%s", a.baseURL, deepseek.PathFetch, t.input)
+				got, fErr := client.Fetch(ctx, &deepseek.FetchRequest{URL: t.input})
 				if fErr != nil {
 					res.Err, res.code = fErr.Error(), codeOf(fErr)
 					results[idx] = res

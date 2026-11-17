@@ -21,6 +21,10 @@ func (a *App) newConfigCmd() *cobra.Command {
 
 可设置的键：` + strings.Join(config.Keys, "、") + `
 
+timeout 只作用于 search、fetch、doctor、init；ocr、asr、tts 各有自己的下限
+（210/300/120 秒），配置只会被取较大值，不会把工具超时压低；显式传 --timeout
+则以该值为准。
+
 API Key 优先级：--api-key 选项 > ` + config.EnvAPIKey + ` 环境变量 > 配置文件。`,
 	}
 	cmd.AddCommand(

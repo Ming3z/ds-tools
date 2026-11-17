@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -85,6 +86,33 @@ func (c *Cache) Set(key string, v any) {
 		return
 	}
 	_ = os.Rename(name, c.file(key))
+	c.prune()
+}
+
+// prune deletes expired entry and leftover temp files. It is best-effort:
+// every error is ignored, and directories are never touched.
+func (c *Cache) prune() {
+	ents, err := os.ReadDir(c.Dir)
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-c.TTL)
+	for _, e := range ents {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasSuffix(name, ".json") && !strings.HasPrefix(name, ".tmp-") {
+			continue
+		}
+		info, infoErr := e.Info()
+		if infoErr != nil {
+			continue
+		}
+		if info.ModTime().Before(cutoff) {
+			_ = os.Remove(filepath.Join(c.Dir, name))
+		}
+	}
 }
 
 // Clear removes every cached entry and reports how many files and bytes went away.
