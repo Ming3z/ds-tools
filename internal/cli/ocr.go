@@ -123,7 +123,16 @@ func (a *App) runOCR(ctx context.Context, path string, o ocrOpts) error {
 		if err != nil {
 			return err
 		}
-		a.cacheSet(key, resp)
+		// A flaky provider can return empty text for a page that is not blank.
+		// Caching that would keep serving "" until the TTL expires, so an
+		// all-blank response is left out of the cache. A response with at least
+		// one non-blank page is cached whole: re-requesting would re-bill every
+		// page just because one of them is legitimately blank.
+		if ocrHasText(resp.Pages) {
+			a.cacheSet(key, resp)
+		} else {
+			a.verbosef("OCR 结果全部为空，未写入缓存")
+		}
 	}
 
 	pages := selectOCRPages(resp.Pages, ranges)
@@ -133,6 +142,9 @@ func (a *App) runOCR(ctx context.Context, path string, o ocrOpts) error {
 	for _, p := range pages {
 		if p.FinishReason == "length" && !a.fQuiet {
 			fmt.Fprintf(a.stderr, "警告：第 %d 页输出被截断（finish_reason=length）\n", p.Index+1)
+		}
+		if strings.TrimSpace(p.Text) == "" && !a.fQuiet {
+			fmt.Fprintf(a.stderr, "警告：第 %d 页识别结果为空；若不是空白页，可加 --no-cache 重试一次\n", p.Index+1)
 		}
 	}
 	return a.emit(o.output, func(w io.Writer) error {
@@ -218,6 +230,17 @@ func selectOCRPages(pages []deepseek.OCRPage, ranges []pageRange) []deepseek.OCR
 		}
 	}
 	return out
+}
+
+// ocrHasText reports whether any page carries non-blank text. An all-blank
+// response is treated as unreliable rather than as a real empty document.
+func ocrHasText(pages []deepseek.OCRPage) bool {
+	for _, p := range pages {
+		if strings.TrimSpace(p.Text) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func joinOCRPages(pages []deepseek.OCRPage) string {

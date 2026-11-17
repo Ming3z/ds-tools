@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -132,6 +133,60 @@ func TestOCRDefaultTextJSONLAndCache(t *testing.T) {
 	}
 	if h.hits != 2 {
 		t.Fatalf("--no-cache hits = %d", h.hits)
+	}
+}
+
+func TestOCRAllBlankPagesAreNotCached(t *testing.T) {
+	h := newHarness(t)
+	h.handle = func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/tools/ocr" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		fmt.Fprint(w, ocrJSON(""))
+	}
+	// h.dir is a fresh temp dir per harness, so the cache next to the config is isolated.
+	path := writeTemp(t, "blank.png", []byte("png"))
+
+	for i := range 2 {
+		if code := h.run("ocr", path); code != 0 {
+			t.Fatalf("run %d exit = %d, stderr=%s", i+1, code, h.err.String())
+		}
+		if got := h.out.String(); strings.TrimSpace(got) != "" {
+			t.Fatalf("run %d stdout = %q, want no text", i+1, got)
+		}
+		if msg := h.err.String(); !strings.Contains(msg, "第 1 页识别结果为空") {
+			t.Fatalf("run %d stderr missing blank page warning: %s", i+1, msg)
+		}
+	}
+	if hits := atomic.LoadInt32(&h.hits); hits != 2 {
+		t.Fatalf("all-blank result must not be cached: hits = %d, want 2", hits)
+	}
+}
+
+func TestOCRPartiallyBlankResultIsCached(t *testing.T) {
+	h := newHarness(t)
+	h.handle = func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/tools/ocr" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		fmt.Fprint(w, ocrJSON("x", "  \n"))
+	}
+	path := writeTemp(t, "doc.pdf", []byte("pdf"))
+
+	for i := range 2 {
+		if code := h.run("ocr", path); code != 0 {
+			t.Fatalf("run %d exit = %d, stderr=%s", i+1, code, h.err.String())
+		}
+		msg := h.err.String()
+		if !strings.Contains(msg, "第 2 页识别结果为空") {
+			t.Fatalf("run %d stderr missing page 2 warning: %s", i+1, msg)
+		}
+		if strings.Contains(msg, "第 1 页识别结果为空") {
+			t.Fatalf("run %d warned about non-blank page 1: %s", i+1, msg)
+		}
+	}
+	if hits := atomic.LoadInt32(&h.hits); hits != 1 {
+		t.Fatalf("partially blank result must be cached: hits = %d, want 1", hits)
 	}
 }
 

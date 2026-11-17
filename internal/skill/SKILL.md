@@ -78,6 +78,7 @@ description: DeepSeek 的 Search、Fetch、OCR、ASR、TTS CLI：需要联网检
   它的文本带 `<｜ref｜>…<｜/ref｜><｜box｜>[[x1,y1,x2,y2]]<｜/box｜>` 标记（坐标按页面宽高归一化到 0–1000），
   ds-tools 原样输出。
 - 大文档用 `--page` 只取需要的页；它在本地裁剪，不会缩小服务端的识别范围。
+- OCR 某页结果为空时 stderr 会警告：不是空白页就加 `--no-cache` 重试一次，仍为空则按空白页处理，不要反复重试。
 - 不给 `--timeout` 时 ocr/asr/tts 取配置超时与命令默认中较大者；要放宽就显式给 `--timeout`。
 - TTS 文本超过 10,000 计费字符（汉字算 2，其他算 1）会在本地以退出码 4 失败、不发请求；
   按段落或句子切开，分几次合成多个文件（`-o part1.wav`、`-o part2.wav`）。
