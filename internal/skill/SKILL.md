@@ -74,10 +74,9 @@ description: DeepSeek 的 Search、Fetch、OCR、ASR、TTS CLI：需要联网检
 - fetch 部分 URL 失败时仍会输出成功条目，退出码取最严重的失败；不要丢弃已拿到的结果。
 - OCR/ASR 结果按文件内容哈希缓存，重复调用直接命中；`--no-cache` 强制重取；TTS 不缓存。
 - ASR 单次最多 120 秒；更长的录音先切分再调用；立体声只识别左声道。
-- OCR 默认 `text_recognition`。两种模式对 PDF 和图片都逐页识别，差别只在不含图片的 Word/PPT：
-  `text_recognition` 直接提取文字，`rich_layout_recognition` 仍逐页识别并保留版面。
-  逐页识别的文本可能带 `<｜ref｜>…<｜/ref｜><｜box｜>[[x1,y1,x2,y2]]<｜/box｜>` 标记，
-  坐标按页面宽高归一化到 0–1000，ds-tools 原样输出。
+- OCR 默认 `text_recognition`，输出纯文本；只有需要坐标或版面结构时才用 `rich_layout_recognition`，
+  它的文本带 `<｜ref｜>…<｜/ref｜><｜box｜>[[x1,y1,x2,y2]]<｜/box｜>` 标记（坐标按页面宽高归一化到 0–1000），
+  ds-tools 原样输出。
 - 大文档用 `--page` 只取需要的页；它在本地裁剪，不会缩小服务端的识别范围。
 - 不给 `--timeout` 时 ocr/asr/tts 取配置超时与命令默认中较大者；要放宽就显式给 `--timeout`。
 - TTS 文本超过 10,000 计费字符（汉字算 2，其他算 1）会在本地以退出码 4 失败、不发请求；
