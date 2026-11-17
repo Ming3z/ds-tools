@@ -29,13 +29,13 @@ type skillDir struct {
 func (a *App) newSkillCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "skill",
-		Short: "安装或检查内置的 Agent Skill（SKILL.md）",
+		Short: "安装、卸载或检查内置的 Agent Skill（SKILL.md）",
 		Long: `二进制内嵌了 SKILL.md，它是给 Agent 的决策契约：何时用 search 何时用
 fetch、字段投影、退出码动作。参数语法以各命令 --help 为准。
 
 安装到 Agent 的 skills 目录后，本地任意 Agent 都能按需加载。`,
 	}
-	cmd.AddCommand(a.newSkillInstallCmd(), a.newSkillStatusCmd())
+	cmd.AddCommand(a.newSkillInstallCmd(), a.newSkillUninstallCmd(), a.newSkillStatusCmd())
 	return cmd
 }
 
@@ -69,23 +69,20 @@ func (a *App) newSkillInstallCmd() *cobra.Command {
 ` + config.EnvSkill + ` 可在不使用上述选项时指定任意目录。`,
 		Args: cobra.NoArgs,
 		RunE: func(*cobra.Command, []string) error {
-			if all && (claude || pi || agents) {
-				return usageErrf("--all 不能与 --claude、--pi、--agents 同时使用")
-			}
-			bases, err := installDirs(claude, pi, agents, all)
+			bases, err := skillTargetDirs(claude, pi, agents, all)
 			if err != nil {
-				return usageErrf("%v", err)
+				return err
 			}
-			results := make([]installResult, 0, len(bases))
+			results := make([]skillResult, 0, len(bases))
 			for _, base := range bases {
 				file := filepath.Join(base, skill.Name, skillFileName)
 				action, err := writeSkill(file)
 				if err != nil {
 					return err
 				}
-				results = append(results, installResult{Path: file, Action: action})
+				results = append(results, skillResult{Path: file, Action: action})
 			}
-			return a.printInstallResult(results)
+			return a.printSkillResults(results)
 		},
 	}
 	cmd.Flags().BoolVar(&claude, "claude", false, "安装到 ~/.claude/skills")
@@ -95,12 +92,54 @@ func (a *App) newSkillInstallCmd() *cobra.Command {
 	return cmd
 }
 
-// installDirs resolves the base skills directories for one install invocation.
-func installDirs(claude, pi, agents, all bool) ([]string, error) {
+func (a *App) newSkillUninstallCmd() *cobra.Command {
+	var claude, pi, agents, all bool
+	cmd := &cobra.Command{
+		Use:   "uninstall",
+		Short: "从 Agent skills 目录移除 SKILL.md",
+		Long: `删除 <skills-dir>/ds-tools/SKILL.md；目录为空时一并删除，目录中的其他文件保持不动。
+
+用 --claude、--pi、--agents 指定目录，或用 --all 移除全部三个目录：
+~/.claude/skills、~/.pi/agent/skills、~/.agents/skills。
+` + config.EnvSkill + ` 可在不使用上述选项时指定任意目录。
+
+未安装的目标报告“未安装”，退出码仍为 0。内容与当前二进制不一致（旧版本或本地修改）时同样直接删除。`,
+		Args: cobra.NoArgs,
+		RunE: func(*cobra.Command, []string) error {
+			bases, err := skillTargetDirs(claude, pi, agents, all)
+			if err != nil {
+				return err
+			}
+			results := make([]skillResult, 0, len(bases))
+			for _, base := range bases {
+				file := filepath.Join(base, skill.Name, skillFileName)
+				action, err := removeSkill(file)
+				if err != nil {
+					return err
+				}
+				results = append(results, skillResult{Path: file, Action: action})
+			}
+			return a.printSkillResults(results)
+		},
+	}
+	cmd.Flags().BoolVar(&claude, "claude", false, "从 ~/.claude/skills 移除")
+	cmd.Flags().BoolVar(&pi, "pi", false, "从 ~/.pi/agent/skills 移除")
+	cmd.Flags().BoolVar(&agents, "agents", false, "从 ~/.agents/skills 移除")
+	cmd.Flags().BoolVar(&all, "all", false, "从全部三个目录移除")
+	return cmd
+}
+
+// skillTargetDirs resolves the base skills directories selected by flags or
+// DS_TOOLS_SKILL_DIR. Install and uninstall share it so target selection
+// cannot drift between them.
+func skillTargetDirs(claude, pi, agents, all bool) ([]string, error) {
+	if all && (claude || pi || agents) {
+		return nil, usageErrf("--all 不能与 --claude、--pi、--agents 同时使用")
+	}
 	if all || claude || pi || agents {
 		dirs, err := skillDirs()
 		if err != nil {
-			return nil, err
+			return nil, usageErrf("%v", err)
 		}
 		var out []string
 		for _, d := range dirs {
@@ -117,7 +156,7 @@ func installDirs(claude, pi, agents, all bool) ([]string, error) {
 	if env := envSkillDir(); env != "" {
 		return []string{env}, nil
 	}
-	return nil, errors.New("请用 --claude、--pi、--agents 或 --all 指定安装目录")
+	return nil, usageErrf("请用 --claude、--pi、--agents 或 --all 指定目标目录")
 }
 
 // writeSkill installs SKILL.md and reports what changed on disk.
@@ -140,13 +179,27 @@ func writeSkill(file string) (string, error) {
 	return action, nil
 }
 
-func (a *App) printInstallResult(results []installResult) error {
+// removeSkill deletes an installed SKILL.md and prunes its directory when
+// empty. Files other than SKILL.md are never touched; a non-empty ds-tools
+// directory therefore survives.
+func removeSkill(file string) (string, error) {
+	if err := os.Remove(file); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "missing", nil
+		}
+		return "", withCode(ExitUsage, fmt.Errorf("删除 %s 失败：%w", file, err))
+	}
+	_ = os.Remove(filepath.Dir(file))
+	return "removed", nil
+}
+
+func (a *App) printSkillResults(results []skillResult) error {
 	switch a.format {
 	case "json":
-		return a.printJSON(installOutput{Skill: skill.Name, Results: results})
+		return a.printJSON(skillOutput{Skill: skill.Name, Results: results})
 	case "jsonl":
 		for _, result := range results {
-			line := installLine{Skill: skill.Name, Path: result.Path, Action: result.Action}
+			line := skillLine{Skill: skill.Name, Path: result.Path, Action: result.Action}
 			if err := a.printJSON(line); err != nil {
 				return err
 			}
@@ -154,38 +207,42 @@ func (a *App) printInstallResult(results []installResult) error {
 		return nil
 	default:
 		for _, result := range results {
-			fmt.Fprintf(a.stdout, "%s %s\n", installActionLabel(result.Action), result.Path)
+			fmt.Fprintf(a.stdout, "%s %s\n", skillActionLabel(result.Action), result.Path)
 		}
 		return nil
 	}
 }
 
-// installActionLabel renders an install action for human-readable output.
-func installActionLabel(action string) string {
+// skillActionLabel renders an install or uninstall action for human-readable output.
+func skillActionLabel(action string) string {
 	switch action {
 	case "installed":
 		return "已安装"
 	case "updated":
 		return "已更新"
+	case "removed":
+		return "已移除"
+	case "missing":
+		return "未安装"
 	default:
 		return "已是最新"
 	}
 }
 
-// installOutput is the JSON document emitted for an install run.
-type installOutput struct {
-	Skill   string          `json:"skill"`
-	Results []installResult `json:"results"`
+// skillOutput is the JSON document emitted for an install or uninstall run.
+type skillOutput struct {
+	Skill   string        `json:"skill"`
+	Results []skillResult `json:"results"`
 }
 
-// installResult is one target's outcome, shared by JSON and JSONL output.
-type installResult struct {
+// skillResult is one target's outcome, shared by JSON and JSONL output.
+type skillResult struct {
 	Path   string `json:"path"`
 	Action string `json:"action"`
 }
 
-// installLine is one JSONL record for an install run.
-type installLine struct {
+// skillLine is one JSONL record for an install or uninstall run.
+type skillLine struct {
 	Skill  string `json:"skill"`
 	Path   string `json:"path"`
 	Action string `json:"action"`
@@ -241,8 +298,8 @@ missing（未安装）、unreadable（无法读取）。
 			}
 			if changed {
 				fmt.Fprint(a.stdout, "\n提示：changed 表示安装内容与当前二进制不一致；运行\n"+
-					"      ds-tools skill install --all\n"+
-					"      可覆盖同步（会覆盖本地修改）。\n")
+					"      ds-tools skill install --all    可覆盖同步（会覆盖本地修改）\n"+
+					"      ds-tools skill uninstall --all  可全部移除\n")
 			}
 			return nil
 		},

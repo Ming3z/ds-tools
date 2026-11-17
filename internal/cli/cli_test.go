@@ -562,7 +562,7 @@ func TestSkillInstallAllCreatesThreeDirs(t *testing.T) {
 	if code := h.run("skill", "install", "--all", "--format", "json"); code != 0 {
 		t.Fatalf("install --all exit = %d, stderr=%s", code, h.err.String())
 	}
-	var got installOutput
+	var got skillOutput
 	if err := json.Unmarshal(h.out.Bytes(), &got); err != nil {
 		t.Fatalf("invalid JSON: %v\n%s", err, h.out.String())
 	}
@@ -582,7 +582,7 @@ func TestSkillInstallAllCreatesThreeDirs(t *testing.T) {
 	if code := h.run("skill", "install", "--all", "--format", "json"); code != 0 {
 		t.Fatalf("re-install exit = %d, stderr=%s", code, h.err.String())
 	}
-	got = installOutput{}
+	got = skillOutput{}
 	if err := json.Unmarshal(h.out.Bytes(), &got); err != nil {
 		t.Fatalf("invalid JSON: %v", err)
 	}
@@ -600,7 +600,7 @@ func TestSkillInstallMultipleHarnessFlags(t *testing.T) {
 	if code := h.run("skill", "install", "--claude", "--agents", "--format", "json"); code != 0 {
 		t.Fatalf("install exit = %d, stderr=%s", code, h.err.String())
 	}
-	var got installOutput
+	var got skillOutput
 	if err := json.Unmarshal(h.out.Bytes(), &got); err != nil {
 		t.Fatalf("invalid JSON: %v\n%s", err, h.out.String())
 	}
@@ -618,6 +618,112 @@ func TestSkillInstallMultipleHarnessFlags(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(h.dir, ".pi", "agent", "skills", "ds-tools", "SKILL.md")); !os.IsNotExist(err) {
 		t.Fatalf("--claude --agents must not touch .pi: %v", err)
+	}
+}
+
+func TestSkillUninstallRequiresExplicitTarget(t *testing.T) {
+	h := newHarness(t)
+	t.Setenv("HOME", h.dir)
+	t.Setenv(config.EnvSkill, "")
+
+	if code := h.run("skill", "uninstall"); code != ExitUsage {
+		t.Fatalf("uninstall without target exit = %d, want 4", code)
+	}
+	if !strings.Contains(h.err.String(), "--claude") {
+		t.Fatalf("error should mention the target flags: %s", h.err.String())
+	}
+
+	if code := h.run("skill", "uninstall", "--all", "--claude"); code != ExitUsage {
+		t.Fatalf("--all with --claude exit = %d, want 4", code)
+	}
+}
+
+func TestSkillUninstallRemovesAndIsIdempotent(t *testing.T) {
+	h := newHarness(t)
+	dir := t.TempDir()
+	t.Setenv(config.EnvSkill, dir)
+
+	skillPath := filepath.Join(dir, "ds-tools", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(skillPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// 旧版本或本地修改过的内容同样直接删除。
+	if err := os.WriteFile(skillPath, []byte("stale skill\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if code := h.run("skill", "uninstall", "--format", "json"); code != 0 {
+		t.Fatalf("uninstall exit = %d, stderr=%s", code, h.err.String())
+	}
+	var got skillOutput
+	if err := json.Unmarshal(h.out.Bytes(), &got); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, h.out.String())
+	}
+	if got.Skill != skill.Name {
+		t.Fatalf("skill = %q, want %q", got.Skill, skill.Name)
+	}
+	if len(got.Results) != 1 || got.Results[0].Action != "removed" || got.Results[0].Path != skillPath {
+		t.Fatalf("results = %v, want one removed %s", got.Results, skillPath)
+	}
+	if _, err := os.Stat(skillPath); !os.IsNotExist(err) {
+		t.Fatalf("SKILL.md should be gone: %v", err)
+	}
+	if _, err := os.Stat(filepath.Dir(skillPath)); !os.IsNotExist(err) {
+		t.Fatalf("empty ds-tools dir should be pruned: %v", err)
+	}
+
+	h.out.Reset()
+	if code := h.run("skill", "uninstall", "--format", "text"); code != 0 {
+		t.Fatalf("repeat uninstall exit = %d, stderr=%s", code, h.err.String())
+	}
+	if !strings.Contains(h.out.String(), "未安装") {
+		t.Fatalf("repeat uninstall should report 未安装: %s", h.out.String())
+	}
+}
+
+func TestSkillUninstallAllKeepsForeignFiles(t *testing.T) {
+	h := newHarness(t)
+	t.Setenv("HOME", h.dir)
+	t.Setenv(config.EnvSkill, "")
+
+	if code := h.run("skill", "install", "--all"); code != 0 {
+		t.Fatalf("install --all exit = %d, stderr=%s", code, h.err.String())
+	}
+	claudeDir := filepath.Join(h.dir, ".claude", "skills", "ds-tools")
+	foreign := filepath.Join(claudeDir, "notes.md")
+	if err := os.WriteFile(foreign, []byte("mine\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	h.out.Reset()
+	if code := h.run("skill", "uninstall", "--all", "--format", "json"); code != 0 {
+		t.Fatalf("uninstall --all exit = %d, stderr=%s", code, h.err.String())
+	}
+	var got skillOutput
+	if err := json.Unmarshal(h.out.Bytes(), &got); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, h.out.String())
+	}
+	if len(got.Results) != 3 {
+		t.Fatalf("results = %v, want 3 targets", got.Results)
+	}
+	for _, result := range got.Results {
+		if result.Action != "removed" {
+			t.Fatalf("action = %q, want removed", result.Action)
+		}
+	}
+	for _, dir := range []string{
+		filepath.Join(h.dir, ".pi", "agent", "skills", "ds-tools"),
+		filepath.Join(h.dir, ".agents", "skills", "ds-tools"),
+	} {
+		if _, err := os.Stat(dir); !os.IsNotExist(err) {
+			t.Fatalf("%s should be pruned: %v", dir, err)
+		}
+	}
+	if _, err := os.Stat(foreign); err != nil {
+		t.Fatalf("unrelated file must survive: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(claudeDir, "SKILL.md")); !os.IsNotExist(err) {
+		t.Fatalf("SKILL.md should be gone: %v", err)
 	}
 }
 
@@ -656,7 +762,7 @@ func TestSkillStatusReportsInstallState(t *testing.T) {
 	if code := h.run("skill", "status", "--format", "text"); code != 0 {
 		t.Fatalf("status text exit = %d", code)
 	}
-	for _, want := range []string{"ok", "missing", "changed", "install --all"} {
+	for _, want := range []string{"ok", "missing", "changed", "install --all", "uninstall --all"} {
 		if !strings.Contains(h.out.String(), want) {
 			t.Fatalf("status text missing %q:\n%s", want, h.out.String())
 		}

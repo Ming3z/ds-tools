@@ -51,12 +51,12 @@ ds-tools init                  # 交互式写入配置；脚本用 --api-key-std
 | `config` | 查看 / 修改配置 |
 | `doctor` | 配置自检；`--probe` 校验 Key 与余额 |
 | `cache` | 查看 / 清空本地缓存 |
-| `skill` | 安装 / 检查 Agent Skill |
+| `skill` | 安装 / 卸载 / 检查 Agent Skill |
 | `version` | 显示版本 |
 
 - `search` 到 `tts` 为 API 命令；计费以 [官方文档](https://api-docs.deepseek.com/zh-cn/guides/search/) 为准，`search` 的 `-n` 与 `--content` 不影响单价。
 - 配置文件默认 `<用户配置目录>/ds-tools/config.json`，可用 `--config` 或 `DS_TOOLS_CONFIG` 指定；Key 优先级见 `ds-tools config --help`。
-- Agent 接入：`ds-tools skill install --all` 安装到全部三个 skills 目录，`ds-tools skill status` 检查内容是否与当前版本一致。
+- Agent 接入：`ds-tools skill install --all` 安装到全部三个 skills 目录，`ds-tools skill status` 检查内容是否与当前版本一致，`ds-tools skill uninstall --all` 全部移除。
 - 不提供 MCP：CLI + Skill 覆盖终端与能执行 shell 的 Agent。
 - 其余为配置与辅助命令；详细用法见 `ds-tools <command> -h`。
 

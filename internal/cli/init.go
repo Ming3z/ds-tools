@@ -402,7 +402,7 @@ func (a *App) installSelectedSkills(selected []skillDir) error {
 			failures = append(failures, err.Error())
 			continue
 		}
-		fmt.Fprintf(a.stdout, "%s %s\n", installActionLabel(action), file)
+		fmt.Fprintf(a.stdout, "%s %s\n", skillActionLabel(action), file)
 	}
 	if len(failures) > 0 {
 		return withCode(ExitUsage, fmt.Errorf("配置已保存，但 skill 安装失败：%s", strings.Join(failures, "；")))
