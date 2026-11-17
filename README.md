@@ -22,14 +22,18 @@ ds-tools tts "你好，我是 DeepSeek。" -o hello.wav
 - `--format` 支持 `text`、`json`、`jsonl`、`md`（`tts` 仅 `text` / `json` / `jsonl`）。
 - `search` / `fetch` 终端默认 `text`、管道默认 `json`，`ocr` / `asr` 默认 `text`。`--fields` 可做字段投影。
 
-## 安装
+## 快速开始
 
-macOS / Linux（需 Node.js ≥ 18）：
+1. macOS / Linux（需 Node.js ≥ 18）：
 
 ```bash
 npm install -g @youmkdev/ds-tools
-ds-tools skill install --all   # 为 Claude Code / Pi 等 Agent 安装 SKILL.md
-ds-tools init                  # 交互式写入配置；脚本用 --api-key-stdin < key.txt
+```
+
+2. 交互式写入配置并安装 SKILL.md
+
+```bash
+ds-tools init
 ```
 
 - 没装 Node.js：从 [Releases](https://github.com/Ming3z/ds-tools/releases) 下载对应平台的静态二进制放入 PATH。
@@ -83,16 +87,6 @@ make test                               # 本机测试
 ./scripts/prepare-npm.sh --version v1.0.0  # 生成 dist/npm/ 包目录，可 npm pack 验证
 ./dev.sh --help                         # 完整用法
 ```
-
-### 发布
-
-npm 包名：顶层 `@youmkdev/ds-tools`，平台包 `ds-tools-<os>-<arch>`（`ds-tools` 与已有 `dstools` 过于相似，registry 拒绝）。
-
-推 tag 即完成发布：`.github/workflows/release.yml` 构建 5 平台产物、创建 GitHub Release，并通过 npm Trusted Publishing（OIDC）发布 5 个包，无需 token、无需人工批准。
-
-首次配置：5 个包各自 Settings → Trusted publishing → GitHub Actions（`Ming3z` / `ds-tools` / `release.yml`，勾选允许 `npm publish`）。配置后 2 天内需成功发布一次完成绑定。
-
-npm 版本不可覆盖：发布失败需修好后升版本号重发；`dist/npm/` 与 `dist/release/` 均不入库。
 
 ## License
 
