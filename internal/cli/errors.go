@@ -11,8 +11,11 @@ import (
 
 // Exit codes are the machine-facing contract of the CLI.
 const (
-	ExitOK      = 0 // success, including an empty search result
-	ExitServer  = 1 // server-side or request error (400/402/403/404/413/500/504)
+	ExitOK = 0 // success, including an empty search result
+	// ExitServer covers server-side/request errors (400/402/403/404/413/500/504)
+	// and a multipart upload whose response was lost: the file reached the
+	// server, so the request must not be retried blindly.
+	ExitServer  = 1
 	ExitAuth    = 2 // missing or invalid API key (401)
 	ExitNetwork = 3 // DNS / connect / TLS / timeout
 	ExitUsage   = 4 // local usage error, nothing was sent
@@ -55,6 +58,9 @@ func codeOf(err error) int {
 	}
 	var te *deepseek.TransportError
 	if errors.As(err, &te) {
+		if te.Sent {
+			return ExitServer
+		}
 		return ExitNetwork
 	}
 	if errors.Is(err, deepseek.ErrNoAPIKey) {
@@ -96,7 +102,10 @@ func (a *App) printError(err error) {
 			p.Status = 0
 			p.Type = "network_error"
 			p.Code = "network_error"
-			p.Retryable = true
+			if te.Sent {
+				p.Code = "response_lost"
+			}
+			p.Retryable = te.Retryable()
 		case errors.Is(err, deepseek.ErrNoAPIKey):
 			p.Type = "auth_error"
 			p.Code = "missing_api_key"

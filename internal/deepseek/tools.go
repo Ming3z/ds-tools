@@ -10,6 +10,8 @@ import (
 	"mime/multipart"
 	"net/http"
 	"strings"
+	"sync/atomic"
+	"time"
 )
 
 const (
@@ -94,11 +96,19 @@ func (c *Client) ASR(ctx context.Context, up Upload) (*ASRResponse, error) {
 
 // TTS calls POST /v1/tools/tts and returns the streaming audio body. The caller
 // must close it. Retries happen only before the body is handed back.
+//
+// The client timeout is not a deadline on the audio stream: it bounds the wait
+// for the response headers and the gap between two successful body reads. A
+// stalled stream is aborted by cancelling the per-attempt context.
 func (c *Client) TTS(ctx context.Context, req *TTSRequest) (io.ReadCloser, error) {
 	payload, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("编码请求失败：%w", err)
 	}
+	if c.HTTP == nil {
+		return nil, errors.New("HTTP 客户端未初始化")
+	}
+	timeout := c.HTTP.Timeout
 
 	var lastErr error
 	for attempt := 0; attempt <= c.Retries; attempt++ {
@@ -115,54 +125,161 @@ func (c *Client) TTS(ctx context.Context, req *TTSRequest) (io.ReadCloser, error
 			}
 		}
 
-		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.URL(pathTTS), bytes.NewReader(payload))
-		if err != nil {
-			return nil, err
-		}
-		httpReq.Header.Set("Authorization", "Bearer "+c.APIKey)
-		httpReq.Header.Set("Content-Type", "application/json")
-		httpReq.Header.Set("Accept", "audio/wav, audio/pcm, application/json")
-		httpReq.Header.Set("User-Agent", "ds-tools")
+		// Drop the total deadline: the stream may legitimately run for
+		// minutes. Our own timers enforce the header wait and the read idle.
+		httpClient := *c.HTTP
+		httpClient.Timeout = 0
 
-		resp, err := c.HTTP.Do(httpReq)
+		body, err := c.ttsAttempt(ctx, &httpClient, payload, timeout)
 		if err != nil {
-			lastErr = &TransportError{Err: err}
+			lastErr = err
 			if ctx.Err() != nil {
 				return nil, &TransportError{Err: ctx.Err()}
 			}
-			continue
-		}
-
-		if resp.StatusCode == http.StatusOK {
-			ct := strings.ToLower(resp.Header.Get("Content-Type"))
-			if strings.Contains(ct, "application/json") {
-				b, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-				_ = resp.Body.Close()
-				if readErr != nil {
-					return nil, &TransportError{Err: readErr}
+			var ae *APIError
+			if errors.As(err, &ae) {
+				if !ae.Retryable() {
+					return nil, err
 				}
-				return nil, parseAPIError(http.StatusOK, b, 0)
+				continue
 			}
-			return resp.Body, nil
-		}
-
-		b, readErr := io.ReadAll(resp.Body)
-		_ = resp.Body.Close()
-		if readErr != nil {
-			lastErr = &TransportError{Err: readErr}
+			var te *TransportError
+			if !errors.As(err, &te) {
+				return nil, err // local failure (e.g. building the request)
+			}
+			if !te.Retryable() {
+				return nil, err
+			}
 			continue
 		}
-		apiErr := parseAPIError(resp.StatusCode, b, parseRetryAfter(resp.Header.Get("Retry-After")))
-		lastErr = apiErr
-		if !apiErr.Retryable() {
-			return nil, apiErr
-		}
+		return body, nil
 	}
 	if lastErr == nil {
 		lastErr = errors.New("请求失败")
 	}
 	return nil, lastErr
 }
+
+// ttsAttempt performs one TTS request. On success the returned stream owns the
+// attempt context and its idle timer until Close.
+func (c *Client) ttsAttempt(ctx context.Context, httpClient *http.Client, payload []byte, timeout time.Duration) (io.ReadCloser, error) {
+	attemptCtx, cancel := context.WithCancel(ctx)
+	idle := newIdleTimeout(timeout, cancel)
+
+	httpReq, err := http.NewRequestWithContext(attemptCtx, http.MethodPost, c.URL(pathTTS), bytes.NewReader(payload))
+	if err != nil {
+		idle.stop()
+		cancel()
+		return nil, err
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+c.APIKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "audio/wav, audio/pcm, application/json")
+	httpReq.Header.Set("User-Agent", "ds-tools")
+
+	resp, err := httpClient.Do(httpReq)
+	if err != nil {
+		idle.stop()
+		cancel()
+		if idle.expired() {
+			return nil, &TransportError{Err: fmt.Errorf("等待响应头超过 %s 未返回：%w", timeout, err)}
+		}
+		return nil, &TransportError{Err: err}
+	}
+
+	if resp.StatusCode == http.StatusOK {
+		ct := strings.ToLower(resp.Header.Get("Content-Type"))
+		if strings.Contains(ct, "application/json") {
+			b, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+			idle.stop()
+			_ = resp.Body.Close()
+			cancel()
+			if readErr != nil {
+				return nil, &TransportError{Err: readErr}
+			}
+			return nil, parseAPIError(http.StatusOK, b, 0)
+		}
+		// Headers are in: restart the watchdog so the wait for the first audio
+		// byte gets the full timeout, not the leftovers of the header wait.
+		idle.arm()
+		return &idleStream{body: resp.Body, idle: idle, cancel: cancel, timeout: timeout}, nil
+	}
+
+	b, readErr := io.ReadAll(resp.Body)
+	idle.stop()
+	_ = resp.Body.Close()
+	cancel()
+	if readErr != nil {
+		return nil, &TransportError{Err: readErr}
+	}
+	return nil, parseAPIError(resp.StatusCode, b, parseRetryAfter(resp.Header.Get("Retry-After")))
+}
+
+// idleStream is the TTS audio body with a read-idle watchdog: if no Read
+// returns data for the configured timeout, the attempt context is cancelled and
+// the pending Read fails with an error naming the timeout.
+type idleStream struct {
+	body    io.ReadCloser
+	idle    *idleTimeout
+	cancel  context.CancelFunc
+	timeout time.Duration
+}
+
+func (s *idleStream) Read(p []byte) (int, error) {
+	n, err := s.body.Read(p)
+	if err != nil {
+		s.idle.stop()
+		if s.idle.expired() {
+			return n, fmt.Errorf("音频流超过 %s 未收到数据：%w", s.timeout, err)
+		}
+		return n, err
+	}
+	s.idle.arm()
+	return n, nil
+}
+
+func (s *idleStream) Close() error {
+	s.idle.stop()
+	err := s.body.Close()
+	s.cancel()
+	return err
+}
+
+// idleTimeout cancels an attempt context when nothing arrives for d. The timer
+// is re-armed after every successful read; d <= 0 disables it.
+type idleTimeout struct {
+	d      time.Duration
+	timer  *time.Timer
+	cancel context.CancelFunc
+	fired  atomic.Bool
+}
+
+func newIdleTimeout(d time.Duration, cancel context.CancelFunc) *idleTimeout {
+	t := &idleTimeout{d: d, cancel: cancel}
+	if d > 0 {
+		t.timer = time.AfterFunc(d, func() {
+			t.fired.Store(true)
+			cancel()
+		})
+	}
+	return t
+}
+
+// arm restarts the watchdog after a successful read.
+func (t *idleTimeout) arm() {
+	if t.timer != nil && !t.fired.Load() {
+		t.timer.Reset(t.d)
+	}
+}
+
+// stop prevents a pending expiry; one that already happened stays recorded.
+func (t *idleTimeout) stop() {
+	if t.timer != nil {
+		t.timer.Stop()
+	}
+}
+
+func (t *idleTimeout) expired() bool { return t.fired.Load() }
 
 func (c *Client) doMultipart(ctx context.Context, path string, up Upload, fields [][2]string, out any) error {
 	if up.Open == nil {
@@ -194,21 +311,33 @@ func (c *Client) doMultipart(ctx context.Context, path string, up Upload, fields
 		resp, err := c.attemptMultipart(ctx, path, up, fields, boundary, contentLength)
 		if err != nil {
 			lastErr = err
+			var te *TransportError
+			sent := errors.As(err, &te) && te.Sent
 			if ctx.Err() != nil {
-				return &TransportError{Err: ctx.Err()}
+				return &TransportError{Err: ctx.Err(), Sent: sent}
+			}
+			if sent {
+				// The server already received the whole file; resending it
+				// could bill the same recognition twice.
+				return err
 			}
 			continue
 		}
 
 		if resp.status == http.StatusOK {
-			if out == nil {
-				return nil
-			}
 			// OCR can return an error object with HTTP 200 after the upload
 			// succeeded (e.g. gateway_timeout_error). Check before decoding.
 			var env errorEnvelope
 			if err := json.Unmarshal(resp.body, &env); err == nil && env.Error.Message != "" {
-				return parseAPIError(http.StatusOK, resp.body, 0)
+				apiErr := applyRetryPolicy(path, parseAPIError(http.StatusOK, resp.body, 0))
+				lastErr = apiErr
+				if !apiErr.Retryable() {
+					return apiErr
+				}
+				continue
+			}
+			if out == nil {
+				return nil
 			}
 			if err := json.Unmarshal(resp.body, out); err != nil {
 				return fmt.Errorf("解析响应失败：%w", err)
@@ -216,7 +345,7 @@ func (c *Client) doMultipart(ctx context.Context, path string, up Upload, fields
 			return nil
 		}
 
-		apiErr := parseAPIError(resp.status, resp.body, resp.retryAfter)
+		apiErr := applyRetryPolicy(path, parseAPIError(resp.status, resp.body, resp.retryAfter))
 		lastErr = apiErr
 		if !apiErr.Retryable() {
 			return apiErr
@@ -254,6 +383,12 @@ func (c *Client) attemptMultipart(ctx context.Context, path string, up Upload, f
 	}
 	contentType := mw.FormDataContentType()
 
+	// sent reports whether the whole multipart body reached the transport.
+	// Pipe writes block until the transport consumes them, so a successful
+	// mw.Close() proves every byte was handed over: the server now owns the
+	// upload and a retry would bill the same file twice.
+	sent := make(chan bool, 1)
+
 	go func() {
 		err := func() error {
 			for _, f := range fields {
@@ -281,9 +416,11 @@ func (c *Client) attemptMultipart(ctx context.Context, path string, up Upload, f
 		}()
 		if err != nil {
 			_ = pw.CloseWithError(err)
+			sent <- false
 			return
 		}
 		_ = pw.Close()
+		sent <- true
 	}()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.URL(path), pr)
@@ -302,16 +439,17 @@ func (c *Client) attemptMultipart(ctx context.Context, path string, up Upload, f
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		_ = pr.Close()
-		return nil, &TransportError{Err: err}
+		return nil, &TransportError{Err: err, Sent: <-sent}
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	b, err := io.ReadAll(resp.Body)
 	if err != nil {
 		_ = pr.Close()
-		return nil, &TransportError{Err: err}
+		return nil, &TransportError{Err: err, Sent: <-sent}
 	}
 	_ = pr.Close()
+	<-sent
 	return &rawResponse{
 		status:     resp.StatusCode,
 		body:       b,
