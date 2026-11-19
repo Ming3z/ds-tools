@@ -2,12 +2,15 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -26,6 +29,10 @@ type App struct {
 	stderr     io.Writer
 	stdinPiped bool
 	stdoutTTY  bool
+	// stdoutRegular reports whether stdout is a regular file (a shell `>`
+	// redirect). Binary output refuses pipes and terminals unless -o - is
+	// explicit, so agents cannot flood their context with audio bytes.
+	stdoutRegular bool
 
 	root     *cobra.Command
 	executed string
@@ -72,14 +79,36 @@ type App struct {
 	timeoutSet bool
 }
 
-// Execute runs the CLI and returns the process exit code.
+// Exit codes for a run interrupted by a signal, following the shell convention
+// 128+signal. They are not API outcomes: nothing may be retried.
+const (
+	ExitSIGINT  = 130 // SIGINT (Ctrl-C)
+	ExitSIGTERM = 143 // SIGTERM
+)
+
+// SignalError is the cancellation cause a caller (main) attaches to the context
+// when a signal interrupts the run. ExecuteContext maps it to 130/143 so agents
+// can tell an interruption from a retryable failure.
+type SignalError struct{ Sig os.Signal }
+
+func (e *SignalError) Error() string { return "收到信号 " + e.Sig.String() + "，已中断" }
+
+// Execute runs the CLI with a background context.
 func Execute(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	return ExecuteContext(context.Background(), args, stdin, stdout, stderr)
+}
+
+// ExecuteContext runs the CLI under ctx. Cancelling ctx unwinds in-flight
+// requests instead of killing the process, so every defer (temp-file removal,
+// upload spool cleanup, stream close) still runs.
+func ExecuteContext(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	app := &App{
-		stdin:      stdin,
-		stdout:     stdout,
-		stderr:     stderr,
-		stdinPiped: isPipe(stdin),
-		stdoutTTY:  isTTY(stdout),
+		stdin:         stdin,
+		stdout:        stdout,
+		stderr:        stderr,
+		stdinPiped:    isPipe(stdin),
+		stdoutTTY:     isTTY(stdout),
+		stdoutRegular: isRegularFile(stdout),
 	}
 	root := app.rootCmd()
 	root.SetArgs(args)
@@ -92,12 +121,51 @@ func Execute(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		app.executed = strings.TrimPrefix(cmd.CommandPath(), "ds-tools ")
 	}
 
-	if err := root.Execute(); err != nil {
+	if err := root.ExecuteContext(ctx); err != nil {
+		// A signal is not a CLI error: report the conventional signal code and
+		// stay silent, since the shell already showed the interruption.
+		if code, ok := interruptedExitCode(ctx); ok {
+			return code
+		}
 		translated := translateCobraError(err)
 		app.printError(translated)
 		return codeOf(translated)
 	}
 	return ExitOK
+}
+
+// interruptedExitCode reports the exit code for a run that ctx cancellation
+// stopped. A deadline is a timeout, not an interruption: it keeps the transient
+// code so the request can be retried later.
+func interruptedExitCode(ctx context.Context) (int, bool) {
+	if ctx.Err() == nil {
+		return 0, false
+	}
+	if code, ok := signalExitCode(ctx); ok {
+		return code, true
+	}
+	if errors.Is(context.Cause(ctx), context.Canceled) {
+		return ExitSIGINT, true
+	}
+	return 0, false
+}
+
+// signalExitCode maps the signal that cancelled ctx to 128+signal.
+func signalExitCode(ctx context.Context) (int, bool) {
+	var se *SignalError
+	if !errors.As(context.Cause(ctx), &se) {
+		return 0, false
+	}
+	switch se.Sig {
+	case os.Interrupt:
+		return ExitSIGINT, true
+	case syscall.SIGTERM:
+		return ExitSIGTERM, true
+	}
+	if sig, ok := se.Sig.(syscall.Signal); ok {
+		return 128 + int(sig), true
+	}
+	return 0, false
 }
 
 func (a *App) rootCmd() *cobra.Command {
@@ -114,10 +182,12 @@ func (a *App) rootCmd() *cobra.Command {
 			"\n" +
 			"Search/Fetch 计费按「成功且有结果」的请求计次，count 与 --content 不影响单价；\n" +
 			"OCR 按成功页数、ASR 按音频时长、TTS 按计费字符计费，详见各命令帮助。\n" +
+			"search/fetch 结果本地缓存 1 小时，重复相同请求不重复计费；--no-cache 跳过读取。\n" +
 			"\n" +
-			"退出码：0 成功（含零结果），1 服务端/请求错误（不要重试；402 余额不足，403 抓取被拦截；\n" +
-			"ocr/asr 上传完成后断连也在此列，避免重复计费），\n" +
-			"2 鉴权失败（运行 init），3 网络错误（可重试），4 用法错误（未计费）。\n" +
+			"退出码：0 成功（含零结果）；1 服务端/请求错误（不要盲目重试；402 余额不足、403 抓取被拦截、\n" +
+			"404 抓取无内容；OCR/ASR 上传完成后响应丢失也在此列，避免重复计费）；2 鉴权失败（运行 init）；\n" +
+			"3 临时错误，稍后可安全重试（网络失败，或内部重试耗尽后仍是 408/429/5xx）；4 用法错误（未发出请求）；\n" +
+			"130/143 被 SIGINT/SIGTERM 中断。\n" +
 			"Agent 请运行 \"ds-tools skill install --all\" 安装决策契约。",
 		Version:       Version,
 		SilenceUsage:  true,
@@ -468,6 +538,20 @@ func isPipe(r io.Reader) bool {
 		return false
 	}
 	return info.Mode()&os.ModeCharDevice == 0
+}
+
+// isRegularFile reports whether w is a regular file, i.e. a shell `>`
+// redirect. Non-*os.File writers (buffers, pipes) count as pipes.
+func isRegularFile(w io.Writer) bool {
+	f, ok := w.(*os.File)
+	if !ok {
+		return false
+	}
+	info, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return info.Mode().IsRegular()
 }
 
 func runeLen(s string) int { return utf8.RuneCountInString(s) }

@@ -30,9 +30,11 @@ func (a *App) newTTSCmd() *cobra.Command {
 		Short: "调用 DeepSeek TTS 接口把文字合成为语音",
 		Long: `把文字合成为语音（POST /v1/tools/tts），音频在响应体中流式返回。
 
-音频是二进制：未指定 -o 且 stdout 是终端时拒绝执行；stdout 是管道时直接写
-stdout，例如 ds-tools tts "..." > speech.wav。指定 -o 文件时，stdout 按
---format 输出一行元信息（text 为人读提示，json/jsonl 为机器可读 JSON）。
+音频是二进制：未指定 -o 时，只有 stdout 是普通文件（shell 的 > speech.wav）
+才写入；stdout 是管道、终端或设备时一律拒绝（退出码 4），请用 -o 文件，
+确实需要写管道时用 -o - 显式放开（ds-tools tts "..." -o - | player）。
+指定 -o 文件时，stdout 按 --format 输出一行元信息（text 为人读提示，
+json/jsonl 为机器可读 JSON）。
 
 --voice          stella（海星，女声，默认）| tide（暗潮，男声）
 --audio-format   wav（默认）| pcm（24 kHz、16 位、单声道裸 PCM）
@@ -45,6 +47,7 @@ stdout，例如 ds-tools tts "..." > speech.wav。指定 -o 文件时，stdout �
 示例：
   ds-tools tts "你好，我是 DeepSeek。" -o hello.wav
   ds-tools tts - < article.md > speech.wav
+  ds-tools tts "..." -o - | ffplay -
   ds-tools tts "..." --voice tide --audio-format pcm -o hello.pcm
 
 tts 不支持 --fields；带 -o 时 stdout 只有一行元信息。`,
@@ -123,8 +126,10 @@ func (a *App) runTTS(ctx context.Context, args []string, o ttsOpts) error {
 	toStdout := false
 	switch {
 	case o.output == "":
-		if a.stdoutTTY {
-			return usageErrf("TTS 输出是二进制音频，请用 -o 写入文件，或重定向到管道")
+		// Agents capture stdout through pipes: never dump audio into one
+		// unless the user redirected to a file or opted in with -o -.
+		if !a.stdoutRegular {
+			return usageErrf("TTS 输出是二进制音频：请用 -o 写入文件，或用 -o - 明确允许写入管道")
 		}
 		toStdout = true
 	case o.output == "-":

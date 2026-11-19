@@ -447,7 +447,7 @@ func TestTTSStdoutAndKeepMarkdown(t *testing.T) {
 		w.Header().Set("Content-Type", "audio/wav")
 		_, _ = w.Write(audio)
 	}
-	if code := h.run("tts", "hello", "--keep-markdown"); code != 0 {
+	if code := h.run("tts", "hello", "--keep-markdown", "-o", "-"); code != 0 {
 		t.Fatalf("exit = %d, stderr=%s", code, h.err.String())
 	}
 	if string(h.out.Bytes()) != string(audio) {

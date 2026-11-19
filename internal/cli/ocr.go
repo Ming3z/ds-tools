@@ -107,7 +107,7 @@ func (a *App) runOCR(ctx context.Context, path string, o ocrOpts) error {
 		return err
 	}
 
-	up, err := a.openUpload(path, o.filename, 100<<20)
+	up, err := a.openUpload(ctx, path, o.filename, 100<<20)
 	if err != nil {
 		return err
 	}

@@ -72,7 +72,7 @@ func (a *App) runASR(ctx context.Context, path string, o asrOpts) error {
 			return err
 		}
 		if path != "-" {
-			if err := a.validateASRPath(path); err != nil {
+			if err := a.validateASRPath(ctx, path); err != nil {
 				return err
 			}
 		}
@@ -84,7 +84,7 @@ func (a *App) runASR(ctx context.Context, path string, o asrOpts) error {
 		return err
 	}
 
-	up, err := a.openUpload(path, o.filename, 8<<20)
+	up, err := a.openUpload(ctx, path, o.filename, 8<<20)
 	if err != nil {
 		return err
 	}
@@ -110,8 +110,8 @@ func (a *App) runASR(ctx context.Context, path string, o asrOpts) error {
 	})
 }
 
-func (a *App) validateASRPath(path string) error {
-	up, err := a.openUpload(path, "stdin", 8<<20)
+func (a *App) validateASRPath(ctx context.Context, path string) error {
+	up, err := a.openUpload(ctx, path, "stdin", 8<<20)
 	if err != nil {
 		return err
 	}

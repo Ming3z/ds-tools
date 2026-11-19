@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -29,9 +30,27 @@ func (u *uploadInput) Close() {
 	}
 }
 
+// ctxReader fails before a read once ctx is cancelled, so spooling a large
+// stdin and hashing a large file unwind instead of finishing after a signal.
+type ctxReader struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (c ctxReader) Read(p []byte) (int, error) {
+	if err := c.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return c.r.Read(p)
+}
+
 // openUpload prepares a file (or spools stdin to a temp file) and hashes its
-// content. maxBytes is enforced before hashing a regular file.
-func (a *App) openUpload(path, stdinName string, maxBytes int64) (*uploadInput, error) {
+// content. maxBytes is enforced before hashing a regular file. ctx cancellation
+// removes any spool file before returning.
+func (a *App) openUpload(ctx context.Context, path, stdinName string, maxBytes int64) (*uploadInput, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if path == "-" {
 		if !a.stdinPiped {
 			return nil, usageErrf("从 stdin 读取需要管道输入")
@@ -42,10 +61,13 @@ func (a *App) openUpload(path, stdinName string, maxBytes int64) (*uploadInput, 
 		}
 		tmpName := tmp.Name()
 		h := sha256.New()
-		n, copyErr := io.Copy(io.MultiWriter(tmp, h), io.LimitReader(a.stdin, maxBytes+1))
+		n, copyErr := io.Copy(io.MultiWriter(tmp, h), io.LimitReader(ctxReader{ctx: ctx, r: a.stdin}, maxBytes+1))
 		closeErr := tmp.Close()
 		if copyErr != nil {
 			_ = os.Remove(tmpName)
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			return nil, withCode(ExitUsage, fmt.Errorf("读取 stdin 失败：%w", copyErr))
 		}
 		if closeErr != nil {
@@ -91,9 +113,12 @@ func (a *App) openUpload(path, stdinName string, maxBytes int64) (*uploadInput, 
 		return nil, withCode(ExitUsage, fmt.Errorf("打开 %s 失败：%w", path, err))
 	}
 	h := sha256.New()
-	_, copyErr := io.Copy(h, f)
+	_, copyErr := io.Copy(h, ctxReader{ctx: ctx, r: f})
 	closeErr := f.Close()
 	if copyErr != nil {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		return nil, withCode(ExitUsage, fmt.Errorf("读取 %s 失败：%w", path, copyErr))
 	}
 	if closeErr != nil {
