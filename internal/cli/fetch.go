@@ -42,6 +42,11 @@ func (a *App) newFetchCmd() *cobra.Command {
   ds-tools fetch https://long.doc --offset 8000 --limit 8000   # 分段读取长文
 
 某个 URL 失败不会中断其余 URL；多 URL 时每行输出一个 JSON 对象。
+输入里混有非法 URL 时，只要还有合法 URL 被请求（并可能已计费），退出码按
+请求错误（1）计算；只有全部 URL 都非法才是用法错误（4）。
+
+每个 URL 的结果都会本地缓存（默认 1 小时），重复运行同一条命令不再计费；
+--no-cache 跳过读取缓存、强制重新抓取（抓到的结果仍会写入缓存）。
 
 ` + fieldsUsage(fetchFields, nil),
 		Args:              cobra.ArbitraryArgs,
@@ -86,17 +91,17 @@ func (a *App) runFetch(ctx context.Context, args []string, o fetchOpts) error {
 		return usageErrf("没有提供 URL（作为参数传入、用 '-' 从 stdin 读取，或用 -f urls.txt）")
 	}
 
-	type target struct{ input, canonical string }
-	var targets []target
+	// plan keeps the input order so results (and -o file numbering) follow it.
+	type planItem struct {
+		input   string
+		invalid error // non-nil when the URL can never be fetched
+	}
+	plan := make([]planItem, 0, len(rawURLs))
 	seen := map[string]bool{}
-	var invalid []fetchResult
+	valid := 0
 	for _, raw := range rawURLs {
 		if err := validateURL(raw); err != nil {
-			invalid = append(invalid, fetchResult{
-				URL:  raw,
-				Err:  err.Error(),
-				code: codeOf(err),
-			})
+			plan = append(plan, planItem{input: raw, invalid: err})
 			continue
 		}
 		// canonicalURL is only a de-duplication / cache key; the API request
@@ -106,14 +111,15 @@ func (a *App) runFetch(ctx context.Context, args []string, o fetchOpts) error {
 			continue
 		}
 		seen[canon] = true
-		targets = append(targets, target{input: raw, canonical: canon})
+		plan = append(plan, planItem{input: raw})
+		valid++
 	}
 
-	if len(targets) == 0 && len(invalid) == 0 {
+	if len(plan) == 0 {
 		return usageErrf("去重后没有可抓取的 URL")
 	}
 	if o.raw {
-		if len(targets)+len(invalid) != 1 {
+		if len(plan) != 1 {
 			return usageErrf("--raw 只支持单个 URL")
 		}
 		// --raw is an explicit request for the bare Markdown body.
@@ -121,11 +127,14 @@ func (a *App) runFetch(ctx context.Context, args []string, o fetchOpts) error {
 	}
 
 	if a.fDryRun {
-		if len(targets) == 0 {
+		if valid == 0 {
 			return usageErrf("没有合法的 URL 可抓取")
 		}
-		for _, t := range targets {
-			if err := a.printDryRun("POST", deepseek.PathFetch, &deepseek.FetchRequest{URL: t.input}); err != nil {
+		for _, p := range plan {
+			if p.invalid != nil {
+				continue
+			}
+			if err := a.printDryRun("POST", deepseek.PathFetch, &deepseek.FetchRequest{URL: p.input}); err != nil {
 				return err
 			}
 		}
@@ -133,46 +142,53 @@ func (a *App) runFetch(ctx context.Context, args []string, o fetchOpts) error {
 	}
 
 	var client *deepseek.Client
-	if len(targets) > 0 {
+	if valid > 0 {
 		client, err = a.client()
 		if err != nil {
 			return err
 		}
 	}
 
-	results := make([]fetchResult, len(targets))
+	results := make([]fetchResult, len(plan))
+	for i, p := range plan {
+		if p.invalid == nil {
+			continue
+		}
+		code := codeOf(p.invalid)
+		// An invalid URL is a local usage error only when the run has nothing
+		// else to do: once valid URLs are requested, some of them are billed and
+		// printed, so exit 4 ("nothing was sent") would be a lie.
+		if valid > 0 {
+			code = ExitServer
+		}
+		results[i] = fetchResult{URL: p.input, Err: p.invalid.Error(), code: code}
+	}
+
 	sem := make(chan struct{}, o.jobs)
 	var wg sync.WaitGroup
-	for i, t := range targets {
+	for i, p := range plan {
+		if p.invalid != nil {
+			continue
+		}
 		wg.Add(1)
-		go func(idx int, t target) {
+		go func(idx int, rawURL string) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			res := fetchResult{URL: t.input}
-			key := "fetch|" + t.canonical
-			page := &deepseek.FetchResponse{}
-			if a.cacheGet(key, page) {
-				a.verbosef("缓存命中：%s", t.input)
-			} else {
-				a.verbosef("POST %s%s url=%s", a.baseURL, deepseek.PathFetch, t.input)
-				got, fErr := client.Fetch(ctx, &deepseek.FetchRequest{URL: t.input})
-				if fErr != nil {
-					res.Err, res.code = fErr.Error(), codeOf(fErr)
-					results[idx] = res
-					return
-				}
-				page = got
-				a.cacheSet(key, page)
+			res := fetchResult{URL: rawURL}
+			page, _, fErr := a.fetchPage(ctx, client, rawURL)
+			if fErr != nil {
+				res.Err, res.code = fErr.Error(), codeOf(fErr)
+				results[idx] = res
+				return
 			}
 			res.Title = page.Title
 			res.Content = page.Content
 			results[idx] = res
-		}(i, t)
+		}(i, p.input)
 	}
 	wg.Wait()
 
-	results = append(results, invalid...)
 	results = applyWindow(results, o.offset, o.limit)
 
 	// A directory target means "one file per page".
@@ -191,9 +207,44 @@ func (a *App) runFetch(ctx context.Context, args []string, o fetchOpts) error {
 	return a.worstFetchError(results)
 }
 
+// fetchPage returns rawURL's page through the on-disk fetch cache shared with
+// search --fill-missing. cached reports a cache hit, so callers can tell a
+// repeat run from a billed one.
+func (a *App) fetchPage(ctx context.Context, client *deepseek.Client, rawURL string) (page *deepseek.FetchResponse, cached bool, err error) {
+	key := "fetch|" + canonicalURL(rawURL)
+	page = &deepseek.FetchResponse{}
+	if a.cacheGet(key, page) {
+		a.verbosef("缓存命中：%s", rawURL)
+		return page, true, nil
+	}
+	a.verbosef("POST %s%s url=%s", a.baseURL, deepseek.PathFetch, rawURL)
+	page, err = client.Fetch(ctx, &deepseek.FetchRequest{URL: rawURL})
+	if err != nil {
+		return nil, false, err
+	}
+	a.cacheSet(key, page)
+	return page, false, nil
+}
+
+// fetchErrRank orders failures by severity rather than numeric code:
+// auth beats server/request, which beats transient, which beats usage.
+func fetchErrRank(code int) int {
+	switch code {
+	case ExitAuth:
+		return 4
+	case ExitServer:
+		return 3
+	case ExitNetwork:
+		return 2
+	case ExitUsage:
+		return 1
+	}
+	return 0
+}
+
 // worstFetchError maps per-URL failures onto the exit-code taxonomy.
 func (a *App) worstFetchError(results []fetchResult) error {
-	worst := ExitOK
+	worst, rank := ExitOK, 0
 	var msg string
 	for _, r := range results {
 		if r.Err == "" {
@@ -203,8 +254,8 @@ func (a *App) worstFetchError(results []fetchResult) error {
 		if code == ExitOK {
 			code = ExitServer
 		}
-		if code > worst {
-			worst, msg = code, r.Err
+		if cr := fetchErrRank(code); cr > rank {
+			worst, rank, msg = code, cr, r.Err
 		}
 	}
 	if worst == ExitOK {

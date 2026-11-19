@@ -55,7 +55,7 @@ func (a *App) newSearchCmd() *cobra.Command {
 	f.IntVarP(&o.count, "count", "n", 10, "返回结果条数（1-50）")
 	f.BoolVar(&o.needContent, "content", false, "在同一请求中返回网页正文（need_content）")
 	f.IntVar(&o.limit, "limit", 0, "每条结果的 content/summary 截断到 N 字符（0 表示不截断）")
-	f.BoolVar(&o.fillMissing, "fill-missing", false, "对正文为空的结果补抓一次（额外计费，需配合 --content）")
+	f.BoolVar(&o.fillMissing, "fill-missing", false, "对正文为空的结果补抓一次（与 fetch 共用缓存，首次额外计费，需配合 --content）")
 	f.Float64Var(&o.minScore, "min-score", 0, "丢弃 rerank_score 低于 N 的结果（0 不过滤，1.5 为优质线）")
 	f.IntVar(&o.minAuthority, "min-authority", -1, "丢弃 authority 低于 N 的结果（-1 不过滤，3 为极权威）")
 	f.StringArrayVar(&o.excludeSites, "exclude-site", nil, "丢弃该站点的结果（可重复指定）")
@@ -179,7 +179,8 @@ func excluded(rawURL string, hosts []string) bool {
 }
 
 // fillMissing fetches pages whose content came back empty. Each fetch is a
-// separate billed request, which is why this behaviour is opt-in.
+// separate billed request, which is why this behaviour is opt-in. Requests go
+// through the same cache as the fetch command, so a repeated run is free.
 func (a *App) fillMissing(ctx context.Context, client *deepseek.Client, results []deepseek.SearchResult) []deepseek.SearchResult {
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, 4)
@@ -198,9 +199,11 @@ func (a *App) fillMissing(ctx context.Context, client *deepseek.Client, results 
 			if err := validateURL(results[idx].URL); err != nil {
 				return
 			}
-			page, err := client.Fetch(ctx, &deepseek.FetchRequest{URL: results[idx].URL})
+			page, _, err := a.fetchPage(ctx, client, results[idx].URL)
 			if err != nil {
-				a.verbosef("补抓正文失败 %s：%v", results[idx].URL, err)
+				if !a.fQuiet {
+					fmt.Fprintf(a.stderr, "警告：补抓正文失败 %s：%v\n", results[idx].URL, err)
+				}
 				return
 			}
 			results[idx].Content = page.Content
