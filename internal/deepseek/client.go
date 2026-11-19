@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"strconv"
 	"strings"
@@ -82,20 +83,13 @@ func (c *Client) Balance(ctx context.Context) (*BalanceResponse, error) {
 	return &out, nil
 }
 
-// Do performs a request with retry-on-retryable-error semantics. It is exported
-// so that callers can reproduce the exact wire behaviour (e.g. --dry-run).
-func (c *Client) Do(ctx context.Context, method, path string, body any, out any) error {
-	return c.do(ctx, method, path, body, out)
-}
-
 // URL returns the absolute URL for a path.
 func (c *Client) URL(path string) string { return c.BaseURL + path }
 
-// PathSearch / PathFetch / PathBalance expose the official paths.
+// PathSearch / PathFetch expose the official paths.
 const (
-	PathSearch  = pathSearch
-	PathFetch   = pathFetch
-	PathBalance = pathBalance
+	PathSearch = pathSearch
+	PathFetch  = pathFetch
 )
 
 func (c *Client) do(ctx context.Context, method, path string, body, out any) error {
@@ -210,13 +204,22 @@ func parseRetryAfter(v string) time.Duration {
 	return 0
 }
 
+// backoffJitter returns the multiplier applied to the exponential backoff, in
+// [0.8, 1.2]. Tests replace it to get a deterministic schedule.
+var backoffJitter = func() float64 { return 0.8 + 0.4*rand.Float64() }
+
 func backoff(attempt int) time.Duration {
 	d := 500 * time.Millisecond
-	for i := 1; i < attempt; i++ {
+	for i := 1; i < attempt && d < maxBackoff; i++ {
 		d *= 2
-		if d > maxBackoff {
-			return maxBackoff
-		}
+	}
+	if d > maxBackoff {
+		d = maxBackoff
+	}
+	// Jitter keeps concurrent --jobs retries from firing in lockstep.
+	d = time.Duration(float64(d) * backoffJitter())
+	if d > maxBackoff {
+		d = maxBackoff
 	}
 	return d
 }

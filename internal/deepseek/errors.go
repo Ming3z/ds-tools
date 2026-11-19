@@ -25,6 +25,9 @@ type APIError struct {
 	// policy (OCR). It is set by the retry loop itself, so Retryable always
 	// reports the decision the loop actually took.
 	retry *bool
+	// ocr marks an error produced by the OCR endpoint, whose 429/504/200-body
+	// rules differ from the generic ones. Set by applyRetryPolicy.
+	ocr bool
 }
 
 func (e *APIError) Error() string {
@@ -38,9 +41,9 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("%s（HTTP %d）", msg, e.Status)
 }
 
-// Retryable reports whether the official docs advise retrying this failure:
-// 408, 429 and 5xx. Every other 4xx must not be retried. Endpoints with their
-// own policy (OCR) set retry explicitly.
+// Retryable reports whether the retry loop should retry this failure right
+// now: 408, 429 and 5xx. Every other 4xx must not be retried. Endpoints with
+// their own policy (OCR) set retry explicitly.
 func (e *APIError) Retryable() bool {
 	if e.retry != nil {
 		return *e.retry
@@ -48,6 +51,24 @@ func (e *APIError) Retryable() bool {
 	return e.Status == http.StatusRequestTimeout ||
 		e.Status == http.StatusTooManyRequests ||
 		e.Status >= 500
+}
+
+// Transient reports whether the caller may retry the request later. It is a
+// weaker claim than Retryable: an OCR 429 without Retry-After is not retried
+// in-process (each attempt re-uploads the whole file) but is still temporary.
+// OCR 504 and OCR 200-body recognition timeouts are terminal: the same upload
+// would burn another server-side budget and cannot succeed.
+func (e *APIError) Transient() bool {
+	switch {
+	case e.Status == http.StatusOK:
+		return e.ocr && transientOCRMessage(e.Message)
+	case e.Status == http.StatusRequestTimeout, e.Status == http.StatusTooManyRequests:
+		return true
+	case e.Status >= 500:
+		return !(e.ocr && e.Status == http.StatusGatewayTimeout)
+	default:
+		return false
+	}
 }
 
 // TransportError is a DNS/connect/TLS/timeout failure. It is retryable unless
@@ -85,12 +106,18 @@ func applyRetryPolicy(path string, e *APIError) *APIError {
 	if path != pathOCR {
 		return e
 	}
+	e.ocr = true
 	var retry bool
 	switch {
 	case e.Status == http.StatusOK:
-		// Recognition already started and is billed; only the two transient
-		// messages are worth another upload.
+		// Recognition failed or timed out, which the docs say is not billed;
+		// only the two documented transient messages are worth another upload.
 		retry = transientOCRMessage(e.Message)
+	case e.Status == http.StatusTooManyRequests:
+		// Every attempt re-uploads up to 100 MiB and the server holds a
+		// concurrency slot for up to 180 s. Only retry when the server told us
+		// when; otherwise the caller decides (Transient stays true).
+		retry = e.RetryAfter > 0
 	case e.Status == http.StatusGatewayTimeout:
 		// Upload + submit exceeded the server's 180 s budget. Re-uploading a
 		// smaller file is the fix; a retry would just burn another 180 s.

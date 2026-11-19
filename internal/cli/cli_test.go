@@ -195,7 +195,7 @@ func TestAuthAndServerExitCodes(t *testing.T) {
 		{401, `{"error":{"message":"invalid key","type":"authentication_error","param":null,"code":"invalid_api_key"}}`, ExitAuth},
 		{402, `{"error":{"message":"insufficient balance","type":"insufficient_quota","param":null,"code":"insufficient_quota"}}`, ExitServer},
 		{400, `{"error":{"message":"'count' must be between 1 and 50","type":"invalid_request_error","param":null,"code":"invalid_request_error"}}`, ExitServer},
-		{504, `{"error":{"message":"timeout","type":"server_error","param":null,"code":"server_error"}}`, ExitServer},
+		{504, `{"error":{"message":"timeout","type":"server_error","param":null,"code":"server_error"}}`, ExitNetwork},
 	}
 	for _, c := range cases {
 		h := newHarness(t)
@@ -215,7 +215,7 @@ func TestStructuredErrorOutput(t *testing.T) {
 		w.WriteHeader(429)
 		fmt.Fprint(w, `{"error":{"message":"rate limited","type":"rate_limit_error","param":null,"code":"rate_limit_error"}}`)
 	}
-	if code := h.run("search", "x", "--error-format", "json"); code != ExitServer {
+	if code := h.run("search", "x", "--error-format", "json"); code != ExitNetwork {
 		t.Fatalf("exit = %d", code)
 	}
 	var payload map[string]any
